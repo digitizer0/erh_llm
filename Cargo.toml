@@ -1,0 +1,9 @@
+[package]
+name = "erh_llm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ollama-rs = "0.3"
+log = "0.4"
+
