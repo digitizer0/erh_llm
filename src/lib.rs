@@ -1,6 +1,6 @@
 mod prompter;
 mod config;
-
+mod history;
 
 //use log::info;
 use ollama_rs::generation::{completion::request::GenerationRequest};

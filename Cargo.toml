@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 ollama-rs = "0.3"
 log = "0.4"
-
+rusqlite = "0.37"
+uuid = "1.17"
