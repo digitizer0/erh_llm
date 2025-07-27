@@ -1,13 +1,6 @@
-#![allow(dead_code)] // TODO: Ta bort när den inte längre behövs
 use rusqlite::{params, Connection, Result};
 
-#[derive(Debug)]
-pub struct ChatMessage {
-    pub id: Option<i32>,
-    pub user: String,
-    pub message: String,
-    pub timestamp: i64,
-}
+use crate::ChatMessage;
 
 pub fn init_db(conn: &Connection) -> Result<()> {
     conn.execute(

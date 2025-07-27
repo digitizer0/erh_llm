@@ -6,5 +6,10 @@ edition = "2024"
 [dependencies]
 ollama-rs = "0.3"
 log = "0.4"
-rusqlite = "0.37"
-uuid = "1.17"
+rusqlite = { version = "0.37", optional = true }
+uuid = { version = "1.17", optional = true }
+
+[features]
+default = ["mem_hist"]
+sqlite_hist = ["rusqlite", "uuid"]
+mem_hist = []
