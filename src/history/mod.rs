@@ -18,6 +18,7 @@ pub(crate)  struct History {
     sqlite: Option<SqliteHistory>
 }
 
+/*
 impl History {
     pub(crate) fn new() -> Self {
         History {
@@ -26,6 +27,7 @@ impl History {
         
     }
 }
+*/
 
 impl HistoryTrait for History {
     fn store(&mut self, msg: &ChatMessage) -> Result<(), Box<dyn std::error::Error>> {

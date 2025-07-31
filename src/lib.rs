@@ -4,6 +4,7 @@ mod history;
 
 use crate::history::HistoryTrait;
 
+use log::debug;
 //use log::info;
 use ollama_rs::generation::{completion::request::GenerationRequest};
 pub use ollama_rs::models::ModelOptions;
@@ -53,19 +54,43 @@ impl Query {
 
     
     // Combine the retrieved chunks with the user message
-    pub(crate) fn augmented_message(&self) -> String {
+    pub(crate) async fn augmented_message(&self) -> String {
         //Read history
-        
-        let constraint = self.constraint.as_deref().unwrap_or("");
+        let h = self.summarize_history().await.unwrap_or_default();
+        let history = if !h.is_empty() {
+            format!("Summarized chat history: {h}\n\n",)
+        } else {
+            String::new()
+        };
+
+        let context = if !self.context.is_empty() {
+            format!("Context: {}\n\n", self.context)
+        } else {
+            String::new()
+        };
+
+        let message = format!("User Query:\n{}\n\n", self.message);
+
+        let constraint = format!("{}\n\n",self.constraint.as_deref().unwrap_or(""));
+
         let style = self.style.as_deref().unwrap_or("");
-        format!("{}\n\nContext:{}\n\nUser Query:\n{}\n{}",constraint,self.context,self.message,style)
+        format!("{history}{constraint}{context}{message}{style}")
     }
 
     async fn summarize_history(&self) -> Result<String,Box<dyn std::error::Error>> {
-        self.history.read()?;
-
-        let prompt = String::from("");
+        let h = self.history.read()?;
+        if h.is_empty() {
+            return Ok(String::new());
+        }
+        let history_text: String = h.iter()
+            .map(|msg| format!("{}: {}\n", msg.user, msg.message))
+            .collect();
+        let prompt = format!(
+            "Summarize the following chat history in a concise paragraph:\n\n{history_text}",
+            
+        );
         let result = self.send_raw(prompt).await?; 
+        debug!("Summarized history: {result}");
         Ok(result)
     }
 
@@ -77,6 +102,7 @@ impl Query {
     }
 
     async fn send_raw(&self, prompt: String) -> Result<String, Box<dyn std::error::Error>> {
+        debug!("Sending prompt: {prompt}");
         let resp = match &self.connection {
             LLM::Ollama(host, port, model_name) => {
                 self.send_ollama(host, *port, model_name, prompt).await?
@@ -85,12 +111,14 @@ impl Query {
             //_ => panic!("Not possible"),
             
         };
+        debug!("Received response: {resp}");
         Ok(resp)
     }
 
 
     pub async fn run(&mut self) -> Result<String, Box<dyn std::error::Error>> {
-        let prompt = self.augmented_message();
+        debug!("Running query with message: {}", self.message);
+        let prompt = self.augmented_message().await;
         self.send(prompt).await
     }
  
