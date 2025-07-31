@@ -8,8 +8,12 @@ ollama-rs = "0.3"
 log = "0.4"
 rusqlite = { version = "0.37", optional = true }
 uuid = { version = "1.17", optional = true }
+r2d2 = {version = "0.8", optional = true}
+r2d2_sqlite = {version = "0.31", optional = true}
+once_cell = { version = "1.21", optional = true }
+anyhow = "1.0"
 
 [features]
-default = ["mem_hist"]
-sqlite_hist = ["rusqlite", "uuid"]
-mem_hist = []
+default = ["sqlite_hist"]
+sqlite_hist = ["rusqlite", "uuid","r2d2", "r2d2_sqlite"]
+mem_hist = ["once_cell"]

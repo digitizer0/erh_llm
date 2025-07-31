@@ -16,6 +16,7 @@ pub struct ChatMessage {
     pub id: Option<i32>,
     pub user: String,
     pub message: String,
+    pub response: String,
     pub timestamp: i64,
 }
 
@@ -31,7 +32,7 @@ impl Default for LLM {
     }
 }
 
-#[derive(Debug,Clone, Default)]
+#[derive(Debug, Default)]
 pub struct Query {
     connection: LLM,
     pub(crate) history: History,
@@ -96,7 +97,7 @@ impl Query {
 
     pub async fn send(&mut self, prompt: String) -> Result<String, Box<dyn std::error::Error>> {
         let resp = self.send_raw(prompt).await?;
-        let msg =ChatMessage { id: None, user: "test".to_string(), message: self.message.clone(), timestamp: 0 };
+        let msg =ChatMessage { id: None, user: "test".to_string(), message: self.message.clone(), response: resp.clone(), timestamp: 0 };
         self.history.store(&msg)?;
         Ok(resp)
     }
