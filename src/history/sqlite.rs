@@ -1,7 +1,10 @@
+use log::debug;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Result};
 use crate::{history::HistoryTrait, ChatMessage};
+use std::fs;
+use std::path::Path;
 
 #[derive(Debug)]
 pub struct SqliteHistory {
@@ -9,16 +12,22 @@ pub struct SqliteHistory {
 }
 
 impl SqliteHistory {
-    pub fn new(database: String) -> Self {
-        let manager = SqliteConnectionManager::file(database.clone());
-        let pool = Pool::new(manager).expect("Failed to create pool");
-        SqliteHistory {
-            pool,
+    /// Checks if the SQLite database file exists, and creates it if it does not.
+    pub fn ensure_db_file_exists(database: &str) -> std::io::Result<()> {
+        let path = Path::new(database);
+        if !path.exists() {
+            fs::File::create(path)?;
         }
+        Ok(())
     }
 
-    pub fn init_db(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let conn = self.pool.get()?;
+    pub fn new(database: String) -> Self {
+        debug!("Initializing SqliteHistory with database: {database}");
+        Self::ensure_db_file_exists(&database).expect("Failed to ensure db file exists");
+        let manager = SqliteConnectionManager::file(database.clone());
+        let pool = Pool::new(manager).expect("Failed to create pool");
+
+        let conn = pool.get().expect("Failed to get connection from pool");
         conn.execute(
             "CREATE TABLE IF NOT EXISTS chat_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28,8 +37,11 @@ impl SqliteHistory {
                 response TEXT
             )",
             [],
-        )?;
-        Ok(())
+        ).expect("Failed to create table");
+
+        SqliteHistory {
+            pool,
+        }
     }
 }
 

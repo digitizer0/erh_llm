@@ -2,6 +2,7 @@ mod prompter;
 mod config;
 mod history;
 
+pub use history::HistoryConfig;
 use crate::history::HistoryTrait;
 
 use log::debug;
@@ -46,11 +47,26 @@ pub struct Query {
 }
 
 impl Query {
-    pub fn new(connection: LLM) -> Self {
-        Query {
+    pub fn new(connection: LLM, history: HistoryConfig) -> Self {
+        let mut q = Query {
             connection,
             ..Default::default()
+        };
+        match history {
+            HistoryConfig::Mem => {
+                debug!("Using in-memory history");
+                q.history = History::new(HistoryConfig::Mem);
+            }
+            HistoryConfig::Sqlite(db) => {
+                debug!("Using SQLite history with database: {db}");
+                q.history = History::new(HistoryConfig::Sqlite(db));
+            }
+            _ => {
+                panic!("Invalid history configuration: {history:?}");
+            }
+            
         }
+        q
     }   
 
     
@@ -75,7 +91,7 @@ impl Query {
         let constraint = format!("{}\n\n",self.constraint.as_deref().unwrap_or(""));
 
         let style = self.style.as_deref().unwrap_or("");
-        format!("{history}{constraint}{context}{message}{style}")
+        format!("{constraint}{history}{context}{message}{style}")
     }
 
     async fn summarize_history(&self) -> Result<String,Box<dyn std::error::Error>> {
@@ -84,7 +100,7 @@ impl Query {
             return Ok(String::new());
         }
         let history_text: String = h.iter()
-            .map(|msg| format!("{}: {}\n", msg.user, msg.message))
+            .map(|msg| format!("{}: {}\nResponse:{}\n", msg.user, msg.message, msg.response))
             .collect();
         let prompt = format!(
             "Summarize the following chat history in a concise paragraph:\n\n{history_text}",

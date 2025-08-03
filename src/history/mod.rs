@@ -93,10 +93,10 @@ impl HistoryTrait for History {
         };
 #[cfg(feature="sqlite_hist")]
         let m = if let Some(x) = &self.sqlite {
-            debug!("Reading memory history");
+            debug!("Reading sqlite history");
             x.read()?
         } else {
-            debug!("No memory history found, returning empty vector.");
+            debug!("No sqlite history found, returning empty vector.");
             vec![]
         };
         Ok(m)
