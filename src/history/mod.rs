@@ -2,6 +2,10 @@ use log::debug;
 
 use crate::ChatMessage;
 
+#[cfg(feature="mysql_hist")]
+mod mysql;
+#[cfg(feature="mysql_hist")]
+use crate::history::mysql::MysqlHistory;
 #[cfg(feature="mem_hist")]
 use crate::history::mem::MemHistory;
 #[cfg(feature="mem_hist")]
@@ -13,7 +17,7 @@ use crate::history::sqlite::SqliteHistory;
 
 
 pub(crate) trait HistoryTrait {
-    fn store(&mut self, msg: &ChatMessage) -> Result<(), Box<dyn std::error::Error>>;
+    fn store(&mut self, msg: &mut ChatMessage) -> Result<(), Box<dyn std::error::Error>>;
     fn read(&self) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>>;
 }
 
@@ -22,6 +26,7 @@ pub(crate) trait HistoryTrait {
 pub enum HistoryConfig {
     Mem,
     Sqlite(String),
+    Mysql(String),
     #[default]
     Unknown,
 }
@@ -32,13 +37,16 @@ pub(crate)  struct History {
 #[cfg(feature="mem_hist")]
     mem: Option<MemHistory>,
 #[cfg(feature="sqlite_hist")]
-    sqlite: Option<SqliteHistory>
+    sqlite: Option<SqliteHistory>,
+#[cfg(feature="mysql_hist")]
+    mysql: Option<MysqlHistory>,
 }
-
 
 impl History {
     pub(crate) fn new(cfg: HistoryConfig) -> Self {
         let cfgstr = if let HistoryConfig::Sqlite(a) = cfg.clone() {
+            a
+        } else if let HistoryConfig::Mysql(a) = cfg.clone() {
             a
         } else {
             panic!("Invalid configuration for History: {cfg:?}");
@@ -49,12 +57,14 @@ impl History {
             mem: Some(MemHistory::new()),
 #[cfg(feature="sqlite_hist")]
             sqlite: Some(SqliteHistory::new(cfgstr)),
-        }        
+#[cfg(feature="mysql_hist")]
+            mysql: Some(MysqlHistory::new(cfgstr)),
+        }
     }
 }
 
 impl HistoryTrait for History {
-    fn store(&mut self, msg: &ChatMessage) -> Result<(), Box<dyn std::error::Error>> {
+    fn store(&mut self, msg: &mut ChatMessage) -> Result<(), Box<dyn std::error::Error>> {
         debug!("Storing message in history: {msg:?}");
 #[cfg(feature="mem_hist")]
         {
@@ -79,6 +89,17 @@ impl HistoryTrait for History {
                 self.sqlite.as_mut().unwrap().store(msg)?;
             }
         }
+#[cfg(feature="mysql_hist")]
+        {
+            if let Some(x) = &mut self.mysql {
+                debug!("Found existing mysql history with");
+                x.store(msg)?;
+            } else {
+                debug!("No mysql history found, creating a new one.");
+                self.mysql = Some(MysqlHistory::new(self.database.clone()));
+                self.mysql.as_mut().unwrap().store(msg)?;
+            }
+        }
         Ok(())
 
     }
@@ -97,6 +118,14 @@ impl HistoryTrait for History {
             x.read()?
         } else {
             debug!("No sqlite history found, returning empty vector.");
+            vec![]
+        };
+#[cfg(feature="mysql_hist")]
+        let m = if let Some(x) = &self.mysql {
+            debug!("Reading mysql history");
+            x.read()?
+        } else {
+            debug!("No mysql history found, returning empty vector.");
             vec![]
         };
         Ok(m)

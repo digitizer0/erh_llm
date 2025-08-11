@@ -48,9 +48,9 @@ impl SqliteHistory {
 impl HistoryTrait for SqliteHistory {
     fn store(&mut self, msg: &ChatMessage) -> Result<(), Box<dyn std::error::Error>> {
         let user = &msg.user;
-        let message = &msg.message;
+        let message = &msg.user_message;
         let timestamp = msg.timestamp;
-        let response = &msg.response;
+        let response = &msg.bot_response;
         let conn = self.pool.get()?;
         conn.execute(
             "INSERT INTO chat_history (user, message, response, timestamp) VALUES (?1, ?2, ?3, ?4)",
@@ -70,9 +70,9 @@ impl HistoryTrait for SqliteHistory {
             Ok(ChatMessage {
                 id: row.get(0)?,
                 user: row.get(1)?,
-                message: row.get(2)?,
+                user_message: row.get(2)?,
                 timestamp: row.get(3)?,
-                response: row.get(4).unwrap_or_default(),
+                bot_response: row.get(4).unwrap_or_default(),
             })
         })?;
         let mut messages = Vec::new();

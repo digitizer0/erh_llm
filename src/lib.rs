@@ -1,13 +1,12 @@
 mod prompter;
-mod config;
 mod history;
 
 pub use history::HistoryConfig;
 use crate::history::HistoryTrait;
 
-use log::debug;
+use log::{debug, warn};
 //use log::info;
-use ollama_rs::generation::{completion::request::GenerationRequest};
+use ollama_rs::generation::{completion::request::GenerationRequest, embeddings::request::{self, EmbeddingsInput}};
 pub use ollama_rs::models::ModelOptions;
 
 use crate::history::History;
@@ -16,15 +15,49 @@ use crate::history::History;
 pub struct ChatMessage {
     pub id: Option<i32>,
     pub user: String,
-    pub message: String,
-    pub response: String,
+    pub user_message: String,
+    pub bot_response: String,
     pub timestamp: i64,
+    pub chatuuid: String,
+}
+
+impl ChatMessage {
+    pub fn validate(&mut self) -> bool {
+        // Validate that all fields are non-empty and chatuuid is of length 40
+        self.user_message = demoji!(self.user_message);
+        self.bot_response = demoji!(self.bot_response);
+        // !self.user_message.is_empty() && !self.bot_response.is_empty() && self.timestamp != 0 && self.chatuuid.len() == 40
+        true //FIXME: For now, we assume all messages are valid
+    }
+
+    pub fn from_tuple(tuple: (String, String, String)) -> Self {
+        ChatMessage {
+            user_message: tuple.0,
+            bot_response: tuple.1,
+            timestamp: 0, // Default value, should be set later
+            chatuuid: tuple.2,
+            ..Default::default()
+        }
+    }
+
+    pub fn noemoji(&self) -> Self {
+        let mut msg = self.clone();
+        msg.user_message = demoji!(self.user_message);
+        msg.bot_response = demoji!(self.bot_response);
+        msg
+    }
+    
 }
 
 #[derive(Debug,Clone,PartialEq)]
 pub enum LLM {
     Ollama(String, u16, String),  // (host, port, model_name)
     // Add other LLMs as needed
+}
+
+enum Prompt {
+    Default(String),
+    Model(String, String), // (model_name, prompt)
 }
 
 impl Default for LLM {
@@ -36,7 +69,7 @@ impl Default for LLM {
 #[derive(Debug, Default)]
 pub struct Query {
     connection: LLM,
-    pub(crate) history: History,
+    pub(crate)  history: History,
     pub classification: Option<String>, // Optional classification of the query
     pub constraint: Option<String>, // Optional constraint for the query
     pub style: Option<String>, // Optional style for the query
@@ -44,6 +77,28 @@ pub struct Query {
     pub message: String,
     pub model_name: String,
     pub options: ModelOptions,
+}
+
+impl Query {
+    pub async fn embed(chunk:String) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        
+        let url = "http://localhost"; // TODO: Make this configurable
+        let port = 11434; // TODO: Make this configurable
+        let model = "nomic-embed-text";
+        let ollama = ollama_rs::Ollama::new(format!("{}:{}",url,port), port);
+        let e = EmbeddingsInput::Single(chunk);
+        let x  = ollama.generate_embeddings(request::GenerateEmbeddingsRequest::new(model.to_string(), e)).await;
+        let y = match x {
+            Ok(response) => response,
+            Err(e) => {
+                debug!("Error generating embeddings: {:?}", e);
+                return Ok(vec![]); // Return an empty vector on error
+            }
+        };
+        //println!("Embeddings: {:?}", y);
+        debug!("VectorCount: {:?}", y.embeddings[0].len());
+        Ok(y.embeddings[0].clone())
+    }    
 }
 
 impl Query {
@@ -60,6 +115,10 @@ impl Query {
             HistoryConfig::Sqlite(db) => {
                 debug!("Using SQLite history with database: {db}");
                 q.history = History::new(HistoryConfig::Sqlite(db));
+            }
+            HistoryConfig::Mysql(config) => {
+                debug!("Using MySQL history with config: {config:?}");
+                q.history = History::new(HistoryConfig::Mysql(config));
             }
             _ => {
                 panic!("Invalid history configuration: {history:?}");
@@ -100,29 +159,47 @@ impl Query {
             return Ok(String::new());
         }
         let history_text: String = h.iter()
-            .map(|msg| format!("{}: {}\nResponse:{}\n", msg.user, msg.message, msg.response))
+            .map(|msg| format!("{}: {}\nResponse:{}\n", msg.user, msg.user_message, msg.bot_response))
             .collect();
         let prompt = format!(
             "Summarize the following chat history in a concise paragraph:\n\n{history_text}",
             
         );
-        let result = self.send_raw(prompt).await?; 
+        let result = self.send_raw(Prompt::Default(prompt)).await?;
         debug!("Summarized history: {result}");
         Ok(result)
     }
 
     pub async fn send(&mut self, prompt: String) -> Result<String, Box<dyn std::error::Error>> {
-        let resp = self.send_raw(prompt).await?;
-        let msg =ChatMessage { id: None, user: "test".to_string(), message: self.message.clone(), response: resp.clone(), timestamp: 0 };
-        self.history.store(&msg)?;
-        Ok(resp)
+        let resp = self.send_raw(Prompt::Default(prompt)).await?;
+        let mut msg =ChatMessage { id: None, user: "test".to_string(), user_message: self.message.clone(), bot_response: resp.clone(), timestamp: 0 , chatuuid: "test-uuid".to_string() };
+        let x = self.history.store(&mut msg);
+        if let Err(e) = x {
+            warn!("Error storing message in history: {}", e);
+            Err(e.into())
+        } else {
+            Ok(resp)
+        }
     }
 
-    async fn send_raw(&self, prompt: String) -> Result<String, Box<dyn std::error::Error>> {
-        debug!("Sending prompt: {prompt}");
+
+
+    async fn send_raw(&self, prompt: Prompt) -> Result<String, Box<dyn std::error::Error>> {
+        let (text,model) = match prompt {
+            Prompt::Default(p) => (p,String::new()),
+            Prompt::Model(model_name, p) => {
+                (p, model_name)
+            }
+        };
+        debug!("Sending prompt: {text}");
         let resp = match &self.connection {
             LLM::Ollama(host, port, model_name) => {
-                self.send_ollama(host, *port, model_name, prompt).await?
+                let model = if model.is_empty() {
+                    model_name
+                } else {
+                    model.as_str()
+                };
+                self.send_ollama(host, *port, model,text).await?
             }
             // Add other LLMs here as needed
             //_ => panic!("Not possible"),
@@ -136,7 +213,9 @@ impl Query {
     pub async fn run(&mut self) -> Result<String, Box<dyn std::error::Error>> {
         debug!("Running query with message: {}", self.message);
         let prompt = self.augmented_message().await;
-        self.send(prompt).await
+        let x = self.send(prompt).await;
+        log::debug!("Query result: {:?}", x);
+        x
     }
  
     async fn send_ollama(&self, host: &str, port: u16, model_name: &str, prompt: String) -> Result<String, Box<dyn std::error::Error>> {
@@ -166,4 +245,23 @@ impl Query {
         self.classify_query().await
     }
 
+}
+
+
+#[macro_export]
+macro_rules! demoji {
+    ($string:expr) => {{
+        use regex::Regex;
+        let regex = Regex::new(concat!(
+            "[",
+            "\u{01F600}-\u{01F64F}", // emoticons
+            "\u{01F300}-\u{01F5FF}", // symbols & pictographs
+            "\u{01F680}-\u{01F6FF}", // transport & map symbols
+            "\u{01F1E0}-\u{01F1FF}", // flags (iOS)
+            "\u{002702}-\u{0027B0}",
+            "\u{0024C2}-\u{01F251}",
+            "]+",
+        )).unwrap();
+        regex.replace_all(&$string, "").to_string()
+    }};
 }
