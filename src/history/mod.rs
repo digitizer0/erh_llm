@@ -18,7 +18,7 @@ use crate::history::sqlite::SqliteHistory;
 
 pub(crate) trait HistoryTrait {
     fn store(&mut self, msg: &mut ChatMessage) -> Result<(), Box<dyn std::error::Error>>;
-    fn read(&self) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>>;
+    fn read(&self, chatuuid: &str) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>>;
 }
 
 #[derive(Debug, Default,Clone, PartialEq, Eq)]
@@ -103,7 +103,7 @@ impl HistoryTrait for History {
         Ok(())
 
     }
-    fn read(&self) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
+    fn read(&self, chatuuid: &str) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
 #[cfg(feature="mem_hist")]
         let m = if let Some(x) = &self.mem {
             debug!("Reading memory history with {} messages.", x.len());
@@ -123,7 +123,7 @@ impl HistoryTrait for History {
 #[cfg(feature="mysql_hist")]
         let m = if let Some(x) = &self.mysql {
             debug!("Reading mysql history");
-            x.read()?
+            x.read(chatuuid)?
         } else {
             debug!("No mysql history found, returning empty vector.");
             vec![]

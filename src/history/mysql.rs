@@ -50,10 +50,11 @@ impl HistoryTrait for MysqlHistory {
         Ok(())
     }
 
-    fn read(&self) -> std::result::Result<Vec<crate::ChatMessage>, Box<dyn std::error::Error>> {
+    fn read(&self, chatuuid: &str) -> std::result::Result<Vec<crate::ChatMessage>, Box<dyn std::error::Error>> {
         let mut conn = self.get_connection()?;
-        let result: Vec<(String, String, String)> = conn.query(
-            "SELECT chatuuid, user_message, bot_response FROM chat_history",
+        let result: Vec<(String, String, String)> = conn.exec(
+            "SELECT chatuuid, user_message, bot_response FROM chat_history WHERE chatuuid = ?",
+            (chatuuid,),
         )?;
         let result: Vec<ChatMessage> = result.into_iter()
             .map(ChatMessage::from_tuple)

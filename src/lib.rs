@@ -159,7 +159,7 @@ impl Query {
     }
 
     async fn summarize_history(&self) -> Result<String,Box<dyn std::error::Error>> {
-        let h = self.history.read()?;
+        let h = self.history.read(&self.chatuuid)?;
         if h.is_empty() {
             return Ok(String::new());
         }
