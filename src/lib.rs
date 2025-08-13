@@ -171,13 +171,14 @@ impl Query {
             
         );
         let result = self.send_raw(Prompt::Default(prompt)).await?;
-        debug!("Summarized history: {result}");
+        //debug!("Summarized history: {result}");
         Ok(result)
     }
 
     pub async fn send(&mut self, prompt: String) -> Result<String, Box<dyn std::error::Error>> {
         let resp = self.send_raw(Prompt::Default(prompt)).await?;
         let mut msg =ChatMessage { id: None, user: self.user.clone(), user_message: self.message.clone(), bot_response: resp.clone(), timestamp: 0 , chatuuid: self.chatuuid.clone() };
+        debug!("Storing message in history: {msg:?}");
         let x = self.history.store(&mut msg);
         if let Err(e) = x {
             warn!("Error storing message in history: {}", e);
@@ -196,7 +197,7 @@ impl Query {
                 (p, model_name)
             }
         };
-        debug!("Sending prompt: {text}");
+        debug!("Sending prompt!!: {text}");
         let resp = match &self.connection {
             LLM::Ollama(host, port, model_name) => {
                 let model = if model.is_empty() {
