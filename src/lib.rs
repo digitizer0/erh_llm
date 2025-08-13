@@ -24,10 +24,16 @@ pub struct ChatMessage {
 impl ChatMessage {
     pub fn validate(&mut self) -> bool {
         // Validate that all fields are non-empty and chatuuid is of length 40
-        self.user_message = demoji!(self.user_message);
-        self.bot_response = demoji!(self.bot_response);
-        // !self.user_message.is_empty() && !self.bot_response.is_empty() && self.timestamp != 0 && self.chatuuid.len() == 40
-        true //FIXME: For now, we assume all messages are valid
+        #[cfg(debug_assertions)]
+        let x = true; // In debug mode, we assume all messages are valid for testing purposes
+        #[cfg(not(debug_assertions))]
+        let x ={
+            !self.user_message.is_empty()
+                && !self.bot_response.is_empty()
+                && self.timestamp != 0
+                && self.chatuuid.len() == 40
+        };
+        x
     }
 
     pub fn from_tuple(tuple: (String, String, String)) -> Self {
@@ -74,17 +80,16 @@ pub struct Query {
     pub constraint: Option<String>, // Optional constraint for the query
     pub style: Option<String>, // Optional style for the query
     pub context: String,
+    pub chatuuid: String, // UUID for the chat session
+    pub user: String, // User identifier
     pub message: String,
     pub model_name: String,
     pub options: ModelOptions,
 }
 
 impl Query {
-    pub async fn embed(chunk:String) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
-        
-        let url = "http://localhost"; // TODO: Make this configurable
-        let port = 11434; // TODO: Make this configurable
-        let model = "nomic-embed-text";
+    pub async fn embed(config:(String,u16,String),chunk:String) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        let (url, port, model) = config;
         let ollama = ollama_rs::Ollama::new(format!("{}:{}",url,port), port);
         let e = EmbeddingsInput::Single(chunk);
         let x  = ollama.generate_embeddings(request::GenerateEmbeddingsRequest::new(model.to_string(), e)).await;
@@ -172,7 +177,7 @@ impl Query {
 
     pub async fn send(&mut self, prompt: String) -> Result<String, Box<dyn std::error::Error>> {
         let resp = self.send_raw(Prompt::Default(prompt)).await?;
-        let mut msg =ChatMessage { id: None, user: "test".to_string(), user_message: self.message.clone(), bot_response: resp.clone(), timestamp: 0 , chatuuid: "test-uuid".to_string() };
+        let mut msg =ChatMessage { id: None, user: self.user.clone(), user_message: self.message.clone(), bot_response: resp.clone(), timestamp: 0 , chatuuid: self.chatuuid.clone() };
         let x = self.history.store(&mut msg);
         if let Err(e) = x {
             warn!("Error storing message in history: {}", e);
