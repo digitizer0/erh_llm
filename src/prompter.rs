@@ -5,8 +5,12 @@ pub(crate) fn create_prompt(
     query: &mut Query,
     retrieved_chunks: &(Vec<String>, Vec<String>),
 ) {
-    query.constraint = Some("You are a helpful assistant. You have access to the following context:".to_string());
-    query.style = Some("If you are unsure about a question, make sure you ask for clarification before moving forward".to_string());
+    if query.setup.constraint.is_none() {
+        query.setup.constraint = Some("You are a helpful assistant. You have access to the following context:".to_string());
+    }
+    if query.setup.style.is_none() {
+        query.setup.style = Some("If you are unsure about a question, make sure you ask for clarification before moving forward".to_string());
+    }
     query.context = retrieved_chunks.0.clone()
         .iter()
         .map(|chunk| format!("{chunk}\n"))

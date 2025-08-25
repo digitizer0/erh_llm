@@ -1,6 +1,6 @@
 [package]
 name = "erh_llm"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
@@ -14,7 +14,7 @@ once_cell = { version = "1.21", optional = true }
 anyhow = "1.0"
 mysql = { version = "26.0", optional = true }
 regex = "1.11"
-
+async-trait = "0.1"
 
 [features]
 default = ["mysql_hist"]

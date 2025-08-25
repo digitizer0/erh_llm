@@ -1,6 +1,8 @@
 mod prompter;
 mod history;
 
+use std::sync::Arc;
+
 pub use history::HistoryConfig;
 use crate::history::HistoryTrait;
 
@@ -10,7 +12,55 @@ use ollama_rs::generation::{completion::request::GenerationRequest, embeddings::
 pub use ollama_rs::models::ModelOptions;
 
 use crate::history::History;
+use async_trait::async_trait;
+#[async_trait]
+pub trait Tool: Send + Sync {
+    fn access(&self) -> &str {
+        "unknown"
+    }
+    fn name(&self) -> &str;
+    async fn run(&self, input: &str) -> Result<String, Box<dyn std::error::Error>>;
+}
 
+#[derive(Default)]
+pub struct ToolRegistry {
+    pub tools: Arc<Vec<Box<dyn Tool + Send + Sync>>>,
+}
+
+impl ToolRegistry {
+    pub fn new() -> Self {
+        ToolRegistry { tools: Arc::new(Vec::new()) }
+    }
+    pub fn register<T: Tool + Send + Sync + 'static>(&mut self, tool: T) {
+        Arc::get_mut(&mut self.tools).unwrap().push(Box::new(tool));
+    }
+    pub fn get(&self, name: &str) -> Option<&(dyn Tool + Send + Sync)> {
+        for t in &*self.tools {
+            if t.name() == name {
+                return Some(t.as_ref());
+            }
+        }
+        None
+    }
+    pub fn list(&self) -> Vec<String> {
+        self.tools.iter().map(|t| t.name().to_string()).collect()
+    }
+}
+/*
+// Example tool implementation
+#[derive(Debug)]
+pub struct EchoTool;
+
+#[async_trait]
+impl Tool for EchoTool {
+    fn name(&self) -> &str {
+        "echo"
+    }
+    async fn run(&self, input: &str) -> Result<String, Box<dyn std::error::Error>> {
+        Ok(format!("Echo: {}", input))
+    }
+}
+*/
 #[derive(Debug,Clone,Default,PartialEq)]
 pub struct ChatMessage {
     pub id: Option<i32>,
@@ -58,12 +108,41 @@ impl ChatMessage {
 #[derive(Debug,Clone,PartialEq)]
 pub enum LLM {
     Ollama(String, u16, String),  // (host, port, model_name)
+    Dummy, // Placeholder for other LLMs
     // Add other LLMs as needed
 }
-
 enum Prompt {
     Default(String),
     Model(String, String), // (model_name, prompt)
+}
+
+#[derive(Debug,Clone)]
+pub struct QuerySetup {
+    pub user: String,
+    pub chatuuid: String,
+    pub model_name: String,
+    pub prompt: String,
+    pub style: Option<String>,
+    pub constraint: Option<String>,
+}
+
+impl Default for QuerySetup {
+    fn default() -> Self {
+        QuerySetup {
+            model_name: "mistral".to_string(),
+            user: String::new(),
+            chatuuid: String::new(),
+            prompt: String::new(),
+            style: None,
+            constraint: None,
+        }
+    }
+}
+impl QuerySetup {
+    pub fn new() -> Self {
+        QuerySetup::default()
+    }
+    
 }
 
 impl Default for LLM {
@@ -72,19 +151,15 @@ impl Default for LLM {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Query {
     connection: LLM,
+    pub setup: QuerySetup,
     pub(crate)  history: History,
-    pub classification: Option<String>, // Optional classification of the query
-    pub constraint: Option<String>, // Optional constraint for the query
-    pub style: Option<String>, // Optional style for the query
     pub context: String,
-    pub chatuuid: String, // UUID for the chat session
-    pub user: String, // User identifier
-    pub message: String,
-    pub model_name: String,
     pub options: ModelOptions,
+    classification: Option<String>,
+    pub tools: Option<ToolRegistry>,
 }
 
 impl Query {
@@ -150,16 +225,18 @@ impl Query {
             String::new()
         };
 
-        let message = format!("User Query:\n{}\n\n", self.message);
+        let qsetup = self.setup.clone();
 
-        let constraint = format!("{}\n\n",self.constraint.as_deref().unwrap_or(""));
+        let message = format!("User Query:\n{}\n\n", qsetup.prompt);
 
-        let style = self.style.as_deref().unwrap_or("");
+        let constraint = format!("{}\n\n",qsetup.constraint.as_deref().unwrap_or(""));
+
+        let style = qsetup.style.as_deref().unwrap_or("");
         format!("{constraint}{history}{context}{message}{style}")
     }
 
     async fn summarize_history(&self) -> Result<String,Box<dyn std::error::Error>> {
-        let h = self.history.read(&self.chatuuid)?;
+        let h = self.history.read(&self.setup.chatuuid)?;
         if h.is_empty() {
             return Ok(String::new());
         }
@@ -170,14 +247,14 @@ impl Query {
             "Summarize the following chat history in a concise paragraph:\n\n{history_text}",
             
         );
-        let result = self.send_raw(Prompt::Default(prompt)).await?;
+        let result = self.send_raw(Prompt::Model("mistral".to_string(), prompt)).await?;
         //debug!("Summarized history: {result}");
         Ok(result)
     }
 
     pub async fn send(&mut self, prompt: String) -> Result<String, Box<dyn std::error::Error>> {
         let resp = self.send_raw(Prompt::Default(prompt)).await?;
-        let mut msg =ChatMessage { id: None, user: self.user.clone(), user_message: self.message.clone(), bot_response: resp.clone(), timestamp: 0 , chatuuid: self.chatuuid.clone() };
+        let mut msg =ChatMessage { id: None, user: self.setup.user.clone(), user_message: self.setup.prompt.clone(), bot_response: resp.clone(), timestamp: 0 , chatuuid: self.setup.chatuuid.clone() };
         debug!("Storing message in history: {msg:?}");
         let x = self.history.store(&mut msg);
         if let Err(e) = x {
@@ -208,8 +285,7 @@ impl Query {
                 self.send_ollama(host, *port, model,text).await?
             }
             // Add other LLMs here as needed
-            //_ => panic!("Not possible"),
-            
+            _ => panic!("Not possible"),
         };
         debug!("Received response: {resp}");
         Ok(resp)
@@ -217,7 +293,24 @@ impl Query {
 
 
     pub async fn run(&mut self) -> Result<String, Box<dyn std::error::Error>> {
-        debug!("Running query with message: {}", self.message);
+        debug!("Running query with message: {}", self.setup.prompt);
+        // Tool selection logic: let LLM decide if a tool should be used
+        if let Some(registry) = &self.tools {
+            // Ask LLM if a tool should be used
+            let tool_list = registry.list().join(", ");
+            let tool_prompt = format!("Given the user query: '{}', and available tools: [{}], which tool (if any) should be used? Reply with the tool name or 'none'.", self.setup.prompt, tool_list);
+            let tool_decision = self.send_raw(Prompt::Default(tool_prompt)).await?;
+            let tool_name = tool_decision.trim();
+            if tool_name != "none" && !tool_name.is_empty() {
+                if let Some(tool) = registry.get(tool_name) {
+                    debug!("LLM selected tool: {}", tool_name);
+                    let result = tool.run(&self.setup.prompt).await?;
+                    return Ok(result);
+                } else {
+                    warn!("Tool '{}' not found in registry", tool_name);
+                }
+            }
+        }
         let prompt = self.augmented_message().await;
         let x = self.send(prompt).await;
         log::debug!("Query result: {:?}", x);
@@ -237,7 +330,7 @@ impl Query {
     pub async fn classify_query(&mut self) -> Result<String, Box<dyn std::error::Error>> {
     
         let r = if let Some(classification) = &self.classification {
-            let prompt = format!("Classify following prompt by these criteria:\n{} \n\nPROMPT: {} ",classification, self.message);
+            let prompt = format!("Classify following prompt by these criteria:\n{} \n\nPROMPT: {} ",classification, self.setup.prompt);
             self.send(prompt).await?
         } else {
             String::new()
@@ -246,7 +339,7 @@ impl Query {
         Ok(r)
     }
 
-    pub async fn classify(&mut self, classification: String) -> Result<String, Box<dyn std::error::Error>> {
+    pub async fn _classify(&mut self, classification: String) -> Result<String, Box<dyn std::error::Error>> {
         self.classification = Some(classification);
         self.classify_query().await
     }
