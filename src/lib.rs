@@ -212,9 +212,9 @@ impl Query {
     // Combine the retrieved chunks with the user message
     pub(crate) async fn augmented_message(&self) -> String {
         //Read history
-        let h = self.summarize_history().await.unwrap_or_default();
-        let history = if !h.is_empty() {
-            format!("Summarized chat history: {h}\n\n",)
+        let (latest, history) = self.summarize_history().await.unwrap_or_default();
+        let history = if !history.is_empty() {
+            format!("Summarized chat history: {history}\n\nLatest Message: {latest}\n\n",)
         } else {
             String::new()
         };
@@ -235,21 +235,30 @@ impl Query {
         format!("{constraint}{history}{context}{message}{style}")
     }
 
-    async fn summarize_history(&self) -> Result<String,Box<dyn std::error::Error>> {
-        let h = self.history.read(&self.setup.chatuuid)?;
-        if h.is_empty() {
-            return Ok(String::new());
+    async fn summarize_history(&self) -> Result<(String, String),Box<dyn std::error::Error>> {
+        let mut history = self.history.read(&self.setup.chatuuid)?;
+        if history.is_empty() {
+            return Ok((String::new(), String::new()));
         }
-        let history_text: String = h.iter()
-            .map(|msg| format!("{}: {}\nResponse:{}\n", msg.user, msg.user_message, msg.bot_response))
-            .collect();
-        let prompt = format!(
-            "Summarize the following chat history in a concise paragraph:\n\n{history_text}",
-            
-        );
-        let result = self.send_raw(Prompt::Model("mistral".to_string(), prompt)).await?;
+
+
+        let latest = history.pop().unwrap();
+        let result =if !history.is_empty() {
+            let history_text: String = history.iter()
+                .map(|msg| format!("{}: {}\nResponse:{}\n", msg.user, msg.user_message, msg.bot_response))
+                .collect();
+            let prompt = format!(
+                "Summarize the following chat history in a concise paragraph:\n\n{history_text}",
+            );
+            self.send_raw(Prompt::Model("mistral".to_string(), prompt)).await?
+        } else {
+            String::new()
+        };
+
+        let latest = format!("{}: {}\nResponse:{}\n", latest.user, latest.user_message, latest.bot_response);
+
         //debug!("Summarized history: {result}");
-        Ok(result)
+        Ok((latest,result))
     }
 
     pub async fn send(&mut self, prompt: String) -> Result<String, Box<dyn std::error::Error>> {
