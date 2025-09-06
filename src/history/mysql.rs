@@ -23,6 +23,7 @@ impl MysqlHistory {
         conn.query_drop(
             r#"CREATE TABLE IF NOT EXISTS chat_history (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                username VARCHAR(60),
                 chatuuid VARCHAR(40) NOT NULL,
                 user_message TEXT NOT NULL,
                 bot_response TEXT NOT NULL,
@@ -42,18 +43,18 @@ impl HistoryTrait for MysqlHistory {
         }
         let msg = msg.noemoji();
         let mut conn = self.get_connection()?;
-        let params = (msg.chatuuid, msg.user_message, msg.bot_response);
+        let params = (msg.user, msg.chatuuid, msg.user_message, msg.bot_response);
         conn.exec_drop(
-            "INSERT INTO chat_history (chatuuid, user_message, bot_response) VALUES (?, ?, ?)",
+            "INSERT INTO chat_history (username, chatuuid, user_message, bot_response) VALUES (?, ?, ?, ?)",
             params,
-        )?;
+        )?; 
         Ok(())
     }
 
     fn read(&self, chatuuid: &str) -> std::result::Result<Vec<crate::ChatMessage>, Box<dyn std::error::Error>> {
         let mut conn = self.get_connection()?;
-        let result: Vec<(String, String, String)> = conn.exec(
-            "SELECT chatuuid, user_message, bot_response FROM chat_history WHERE chatuuid = ?",
+        let result: Vec<(String, String, String, String)> = conn.exec(
+            "SELECT username, chatuuid, user_message, bot_response FROM chat_history WHERE chatuuid = ?",
             (chatuuid,),
         )?;
         let result: Vec<ChatMessage> = result.into_iter()

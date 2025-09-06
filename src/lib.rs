@@ -86,12 +86,13 @@ impl ChatMessage {
         x
     }
 
-    pub fn from_tuple(tuple: (String, String, String)) -> Self {
+    pub fn from_tuple(tuple: (String,String, String, String)) -> Self {
         ChatMessage {
-            user_message: tuple.0,
-            bot_response: tuple.1,
+            user: tuple.0.clone(),
+            user_message: tuple.1.clone(),
+            bot_response: tuple.2.clone(),
             timestamp: 0, // Default value, should be set later
-            chatuuid: tuple.2,
+            chatuuid: tuple.3.clone(),
             ..Default::default()
         }
     }
