@@ -11,7 +11,7 @@ use ollama_rs::generation::{completion::request::GenerationRequest, embeddings::
 pub use ollama_rs::models::ModelOptions;
 
 use crate::history::History;
-pub use crate::tools::{ToolRegistry, Tool};
+pub use crate::tools::{ToolRegistry, Tool, ToolSource};
 
 
 #[derive(Debug,Clone,Default,PartialEq)]
@@ -265,7 +265,7 @@ impl Query {
             let tool_decision = self.send_raw(Prompt::Default(tool_prompt)).await?;
             let tool_name = tool_decision.trim();
             if tool_name != "none" && !tool_name.is_empty() {
-                if let Some(tool) = registry.get(tool_name) {
+                if let Some(_tool) = registry.get(tool_name) {
                     debug!("LLM selected tool: {}", tool_name);
                     let result = String::new(); //tool.run(&self.setup.prompt).await?;
                     return Ok(result);

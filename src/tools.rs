@@ -5,8 +5,17 @@ pub struct ToolRegistry {
     pub tools: Vec<Tool>,
 }
 
+#[derive(Clone, Debug, PartialEq,Default)]
+pub enum ToolSource {
+    MCP,
+    Internal,
+    #[default]
+    Unknown
+}
+
 #[derive(Clone)]
 pub struct Tool {
+    pub source: ToolSource,
     pub name: String,
     pub description: String,
     pub access: String,
