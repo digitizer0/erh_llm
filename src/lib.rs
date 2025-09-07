@@ -1,7 +1,6 @@
 mod prompter;
 mod history;
-
-use std::sync::Arc;
+mod tools;
 
 pub use history::HistoryConfig;
 use crate::history::HistoryTrait;
@@ -12,55 +11,9 @@ use ollama_rs::generation::{completion::request::GenerationRequest, embeddings::
 pub use ollama_rs::models::ModelOptions;
 
 use crate::history::History;
-use async_trait::async_trait;
-#[async_trait]
-pub trait Tool: Send + Sync {
-    fn access(&self) -> &str {
-        "unknown"
-    }
-    fn name(&self) -> &str;
-    async fn run(&self, input: &str) -> Result<String, Box<dyn std::error::Error>>;
-}
+pub use crate::tools::{ToolRegistry, Tool};
 
-#[derive(Default)]
-pub struct ToolRegistry {
-    pub tools: Arc<Vec<Box<dyn Tool + Send + Sync>>>,
-}
 
-impl ToolRegistry {
-    pub fn new() -> Self {
-        ToolRegistry { tools: Arc::new(Vec::new()) }
-    }
-    pub fn register<T: Tool + Send + Sync + 'static>(&mut self, tool: T) {
-        Arc::get_mut(&mut self.tools).unwrap().push(Box::new(tool));
-    }
-    pub fn get(&self, name: &str) -> Option<&(dyn Tool + Send + Sync)> {
-        for t in &*self.tools {
-            if t.name() == name {
-                return Some(t.as_ref());
-            }
-        }
-        None
-    }
-    pub fn list(&self) -> Vec<String> {
-        self.tools.iter().map(|t| t.name().to_string()).collect()
-    }
-}
-/*
-// Example tool implementation
-#[derive(Debug)]
-pub struct EchoTool;
-
-#[async_trait]
-impl Tool for EchoTool {
-    fn name(&self) -> &str {
-        "echo"
-    }
-    async fn run(&self, input: &str) -> Result<String, Box<dyn std::error::Error>> {
-        Ok(format!("Echo: {}", input))
-    }
-}
-*/
 #[derive(Debug,Clone,Default,PartialEq)]
 pub struct ChatMessage {
     pub id: Option<i32>,
@@ -112,7 +65,7 @@ pub enum LLM {
     Dummy, // Placeholder for other LLMs
     // Add other LLMs as needed
 }
-enum Prompt {
+pub enum Prompt {
     Default(String),
     Model(String, String), // (model_name, prompt)
 }
@@ -179,7 +132,7 @@ impl Query {
         //println!("Embeddings: {:?}", y);
         debug!("VectorCount: {:?}", y.embeddings[0].len());
         Ok(y.embeddings[0].clone())
-    }    
+    }
 }
 
 impl Query {
@@ -277,7 +230,7 @@ impl Query {
 
 
 
-    async fn send_raw(&self, prompt: Prompt) -> Result<String, Box<dyn std::error::Error>> {
+    pub async fn send_raw(&self, prompt: Prompt) -> Result<String, Box<dyn std::error::Error>> {
         let (text,model) = match prompt {
             Prompt::Default(p) => (p,String::new()),
             Prompt::Model(model_name, p) => {
@@ -306,7 +259,7 @@ impl Query {
         debug!("Running query with message: {}", self.setup.prompt);
         // Tool selection logic: let LLM decide if a tool should be used
         if let Some(registry) = &self.tools {
-            // Ask LLM if a tool should be used
+            // Ask LLM if a tool should be used TODO: Move this to tools module
             let tool_list = registry.list().join(", ");
             let tool_prompt = format!("Given the user query: '{}', and available tools: [{}], which tool (if any) should be used? Reply with the tool name or 'none'.", self.setup.prompt, tool_list);
             let tool_decision = self.send_raw(Prompt::Default(tool_prompt)).await?;
@@ -314,7 +267,7 @@ impl Query {
             if tool_name != "none" && !tool_name.is_empty() {
                 if let Some(tool) = registry.get(tool_name) {
                     debug!("LLM selected tool: {}", tool_name);
-                    let result = tool.run(&self.setup.prompt).await?;
+                    let result = String::new(); //tool.run(&self.setup.prompt).await?;
                     return Ok(result);
                 } else {
                     warn!("Tool '{}' not found in registry", tool_name);
