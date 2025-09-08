@@ -6,12 +6,11 @@ pub use history::HistoryConfig;
 use crate::history::HistoryTrait;
 
 use log::{debug, warn};
-//use log::info;
 use ollama_rs::generation::{completion::request::GenerationRequest, embeddings::request::{self, EmbeddingsInput}};
 pub use ollama_rs::models::ModelOptions;
 
 use crate::history::History;
-pub use crate::tools::{ToolRegistry, Tool, ToolSource};
+pub use crate::tools::{ComponentRegistry, Component, ComponentSource, ComponentType};
 
 
 #[derive(Debug,Clone,Default,PartialEq)]
@@ -113,7 +112,7 @@ pub struct Query {
     pub context: String,
     pub options: ModelOptions,
     classification: Option<String>,
-    pub tools: Option<ToolRegistry>,
+    pub components: Option<ComponentRegistry>,
 }
 
 impl Query {
@@ -258,7 +257,7 @@ impl Query {
     pub async fn run(&mut self) -> Result<String, Box<dyn std::error::Error>> {
         debug!("Running query with message: {}", self.setup.prompt);
         // Tool selection logic: let LLM decide if a tool should be used
-        if let Some(registry) = &self.tools {
+        if let Some(registry) = &self.components {
             // Ask LLM if a tool should be used TODO: Move this to tools module
             let tool_list = registry.list().join(", ");
             let tool_prompt = format!("Given the user query: '{}', and available tools: [{}], which tool (if any) should be used? Reply with the tool name or 'none'.", self.setup.prompt, tool_list);
