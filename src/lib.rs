@@ -1,6 +1,6 @@
 mod prompter;
 mod history;
-mod tools;
+mod components;
 
 pub use history::HistoryConfig;
 use crate::history::HistoryTrait;
@@ -10,7 +10,7 @@ use ollama_rs::generation::{completion::request::GenerationRequest, embeddings::
 pub use ollama_rs::models::ModelOptions;
 
 use crate::history::History;
-pub use crate::tools::{ComponentRegistry, Component, ComponentSource, ComponentType};
+pub use crate::components::{ComponentRegistry, Component, ComponentSource, tools::Tool as Tool, prompt::Prompt as Prompt, resource::Resource, sampling::Sampling};
 
 
 #[derive(Debug,Clone,Default,PartialEq)]
@@ -64,7 +64,7 @@ pub enum LLM {
     Dummy, // Placeholder for other LLMs
     // Add other LLMs as needed
 }
-pub enum Prompt {
+pub enum UserPrompt {
     Default(String),
     Model(String, String), // (model_name, prompt)
 }
@@ -203,7 +203,7 @@ impl Query {
             let prompt = format!(
                 "Summarize the following chat history in a concise paragraph:\n\n{history_text}",
             );
-            self.send_raw(Prompt::Model("mistral".to_string(), prompt)).await?
+            self.send_raw(UserPrompt::Model("mistral".to_string(), prompt)).await?
         } else {
             String::new()
         };
@@ -215,7 +215,7 @@ impl Query {
     }
 
     pub async fn send(&mut self, prompt: String) -> Result<String, Box<dyn std::error::Error>> {
-        let resp = self.send_raw(Prompt::Default(prompt)).await?;
+        let resp = self.send_raw(UserPrompt::Default(prompt)).await?;
         let mut msg =ChatMessage { id: None, user: self.setup.user.clone(), user_message: self.setup.prompt.clone(), bot_response: resp.clone(), timestamp: 0 , chatuuid: self.setup.chatuuid.clone() };
         debug!("Storing message in history: {msg:?}");
         let x = self.history.store(&mut msg);
@@ -229,10 +229,10 @@ impl Query {
 
 
 
-    pub async fn send_raw(&self, prompt: Prompt) -> Result<String, Box<dyn std::error::Error>> {
+    pub async fn send_raw(&self, prompt: UserPrompt) -> Result<String, Box<dyn std::error::Error>> {
         let (text,model) = match prompt {
-            Prompt::Default(p) => (p,String::new()),
-            Prompt::Model(model_name, p) => {
+            UserPrompt::Default(p) => (p,String::new()),
+            UserPrompt::Model(model_name, p) => {
                 (p, model_name)
             }
         };
@@ -257,21 +257,9 @@ impl Query {
     pub async fn run(&mut self) -> Result<String, Box<dyn std::error::Error>> {
         debug!("Running query with message: {}", self.setup.prompt);
         // Tool selection logic: let LLM decide if a tool should be used
-        if let Some(registry) = &self.components {
+        if let Some(_registry) = &self.components {
             // Ask LLM if a tool should be used TODO: Move this to tools module
-            let tool_list = registry.list().join(", ");
-            let tool_prompt = format!("Given the user query: '{}', and available tools: [{}], which tool (if any) should be used? Reply with the tool name or 'none'.", self.setup.prompt, tool_list);
-            let tool_decision = self.send_raw(Prompt::Default(tool_prompt)).await?;
-            let tool_name = tool_decision.trim();
-            if tool_name != "none" && !tool_name.is_empty() {
-                if let Some(_tool) = registry.get(tool_name) {
-                    debug!("LLM selected tool: {}", tool_name);
-                    let result = String::new(); //tool.run(&self.setup.prompt).await?;
-                    return Ok(result);
-                } else {
-                    warn!("Tool '{}' not found in registry", tool_name);
-                }
-            }
+
         }
         let prompt = self.augmented_message().await;
         let x = self.send(prompt).await;
