@@ -2,6 +2,8 @@ mod prompter;
 mod history;
 mod components;
 
+use std::collections::HashMap;
+
 pub use history::HistoryConfig;
 use crate::history::HistoryTrait;
 
@@ -69,12 +71,13 @@ pub enum UserPrompt {
     Model(String, String), // (model_name, prompt)
 }
 
-#[derive(Debug,Clone)]
+#[derive(Clone)]
 pub struct QuerySetup {
     pub user: String,
     pub chatuuid: String,
     pub model_name: String,
     pub prompt: String,
+    pub components: Option<ComponentRegistry>,
     pub style: Option<String>,
     pub constraint: Option<String>,
 }
@@ -88,6 +91,7 @@ impl Default for QuerySetup {
             prompt: String::new(),
             style: None,
             constraint: None,
+            components: None,
         }
     }
 }
@@ -163,7 +167,8 @@ impl Query {
 
     
     // Combine the retrieved chunks with the user message
-    pub(crate) async fn augmented_message(&self) -> String {
+    pub async fn execute(&mut self) -> Result<String, Box<dyn std::error::Error>> {
+        debug!("Running query with message: {}", self.setup.prompt);
         //Read history
         let (latest, history) = self.summarize_history().await.unwrap_or_default();
         let history = if !history.is_empty() {
@@ -172,8 +177,36 @@ impl Query {
             String::new()
         };
 
-        let context = if !self.context.is_empty() {
-            format!("Context: {}\n\n", self.context)
+        let tool = if self.components.is_some() {
+            let components = self.components.clone().unwrap();
+            debug!("Available components: {:?}", components.len());
+            let tool_list = components.get_tools().await;
+            let list: HashMap<String, String> = if !tool_list.is_empty() {
+                let prompt = format!("User Query: {}\n\nAvailable Tools: {}\n\nBased on the above, which tools should be used to best address the user's query? For each tool, if a parameter is needed, output in the format: tool_name|parameter. If no parameter is needed, just output the tool name. List only the tool names (and parameters if any), separated by commas. If none are needed, return 'none'.\n\nExample output:\nsearch|manual.pdf, summarize, translate|sv\n", self.setup.prompt, tool_list);
+                let x =self.send_raw(UserPrompt::Model("gemma3:27b".to_string(), prompt)).await.unwrap_or_default();
+                debug!("Tool selection response: {}", x);
+                let v =x.split(',')
+                    .map(|s| s.trim().to_lowercase())
+                    .filter(|s| s != "none" && !s.is_empty())
+                    .collect::<Vec<String>>();
+                let hm = v.iter().fold(HashMap::new(), |mut hm, s| {
+                    let mut parts = s.splitn(2, '|');
+                    let key = parts.next().unwrap_or("").to_string();
+                    let value = parts.next().unwrap_or("").to_string();
+                    hm.insert(key, value);
+                    hm
+                });
+                hm
+            } else {
+                HashMap::new()
+            };
+            components.execute_tools(&list).await.unwrap_or_default()
+        } else {
+            String::new()
+        };
+        debug!("Tool execution result: {}", tool);
+        let context = if !self.context.is_empty() || !tool.is_empty() {
+            format!("Context: {}\n\n{}\n\n", self.context, tool)
         } else {
             String::new()
         };
@@ -185,7 +218,10 @@ impl Query {
         let constraint = format!("{}\n\n",qsetup.constraint.as_deref().unwrap_or(""));
 
         let style = qsetup.style.as_deref().unwrap_or("");
-        format!("{constraint}{history}{context}{message}{style}")
+        let p = format!("{constraint}{history}{context}{message}{style}");
+        let x = self.send(p).await.unwrap_or_default();
+        log::debug!("Query result: {:?}", x);
+        Ok(x)
     }
 
     async fn summarize_history(&self) -> Result<(String, String),Box<dyn std::error::Error>> {
@@ -251,20 +287,6 @@ impl Query {
         };
         debug!("Received response: {resp}");
         Ok(resp)
-    }
-
-
-    pub async fn run(&mut self) -> Result<String, Box<dyn std::error::Error>> {
-        debug!("Running query with message: {}", self.setup.prompt);
-        // Tool selection logic: let LLM decide if a tool should be used
-        if let Some(_registry) = &self.components {
-            // Ask LLM if a tool should be used TODO: Move this to tools module
-
-        }
-        let prompt = self.augmented_message().await;
-        let x = self.send(prompt).await;
-        log::debug!("Query result: {:?}", x);
-        x
     }
  
     async fn send_ollama(&self, host: &str, port: u16, model_name: &str, prompt: String) -> Result<String, Box<dyn std::error::Error>> {

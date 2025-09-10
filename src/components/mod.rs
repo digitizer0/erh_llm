@@ -3,6 +3,8 @@ pub (crate) mod resource;
 pub (crate) mod sampling;
 pub (crate) mod tools;
 
+use log::debug;
+
 use crate::components::prompt::Prompt;
 use crate::components::resource::Resource;
 use crate::components::sampling::Sampling;
@@ -18,7 +20,7 @@ pub enum ComponentSource {
 }
 
 
-#[derive(Clone)]
+#[derive(Clone,Default)]
 pub struct ComponentRegistry {
     pub components: Vec<Component>,
 }
@@ -48,6 +50,40 @@ impl ComponentRegistry {
     }
     pub fn add_component(&mut self, component: Component) {
         self.components.push(component);
+    }
+
+    pub(crate) async fn get_tools(&self) -> String {
+        let mut selected_tools = Vec::new();
+        for component in &self.components {
+            for tool in &component.tools {
+                selected_tools.push(format!("Tool Name: {} Description: {}", tool.name, tool.description));
+            }
+        }
+        selected_tools.join(", ")
+    }
+
+    pub(crate) async fn execute_tools(&self, tool_list: &std::collections::HashMap<String, String>) -> Option<String> {
+        let mut results = Vec::new();
+        for (tool_name, param) in tool_list {
+            for component in &self.components {
+                for tool in &component.tools {
+                    if &tool.name == tool_name {
+                        debug!("Executing tool: {} with param: {}", tool_name, param);
+                        if let Some(result) = tool.execute(param).await {
+                            results.push(format!("Result from {}: {}", tool_name, result));
+                        }
+                    }
+                }
+            }
+        }
+        if results.is_empty() {
+            None
+        } else {
+            Some(results.join("\n"))
+        }
+    }
+    pub fn len(&self) -> usize {
+        self.components.len()
     }
     
 }
