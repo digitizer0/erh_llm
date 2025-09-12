@@ -27,17 +27,12 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn validate(&mut self) -> bool {
-        // Validate that all fields are non-empty and chatuuid is of length 40
-        #[cfg(debug_assertions)]
-        let x = true; // In debug mode, we assume all messages are valid for testing purposes
-        #[cfg(not(debug_assertions))]
-        let x ={
+        {
             !self.user_message.is_empty()
                 && !self.bot_response.is_empty()
-                && self.timestamp != 0
-                && self.chatuuid.len() == 40
-        };
-        x
+                //&& self.timestamp != 0
+                //&& self.chatuuid.len() == 40 
+        }
     }
 
     pub fn from_tuple(tuple: (String,String, String, String)) -> Self {
