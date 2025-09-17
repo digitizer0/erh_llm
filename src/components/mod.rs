@@ -59,6 +59,11 @@ impl ComponentRegistry {
                 selected_tools.push(format!("Tool Name: {} Description: {}", tool.name, tool.description));
             }
         }
+        for component in &self.components {
+            for resource in &component.resources {
+                selected_tools.push(format!("Resource Name: {} Description: {}", resource.name, resource.description));
+            }
+        }
         selected_tools.join(", ")
     }
 
@@ -70,6 +75,14 @@ impl ComponentRegistry {
                     if &tool.name == tool_name {
                         debug!("Executing tool: {} with param: {}", tool_name, param);
                         if let Some(result) = tool.execute(param).await {
+                            results.push(format!("Result from {}: {}", tool_name, result));
+                        }
+                    }
+                }
+                for resource in &component.resources {
+                    if &resource.name == tool_name {
+                        debug!("Executing resource: {} with param: {}", tool_name, param);
+                        if let Some(result) = resource.execute(param).await {
                             results.push(format!("Result from {}: {}", tool_name, result));
                         }
                     }

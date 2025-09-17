@@ -27,6 +27,7 @@ pub enum HistoryConfig {
     Mem,
     Sqlite(String),
     Mysql(String),
+    None,
     #[default]
     Unknown,
 }

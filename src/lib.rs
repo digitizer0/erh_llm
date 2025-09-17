@@ -107,7 +107,7 @@ impl Default for LLM {
 pub struct Query {
     connection: LLM,
     pub setup: QuerySetup,
-    pub(crate)  history: History,
+    pub(crate)  history: Option<History>,
     pub context: String,
     pub options: ModelOptions,
     classification: Option<String>,
@@ -142,18 +142,18 @@ impl Query {
         match history {
             HistoryConfig::Mem => {
                 debug!("Using in-memory history");
-                q.history = History::new(HistoryConfig::Mem);
+                q.history = Some(History::new(HistoryConfig::Mem));
             }
             HistoryConfig::Sqlite(db) => {
                 debug!("Using SQLite history with database: {db}");
-                q.history = History::new(HistoryConfig::Sqlite(db));
+                q.history = Some(History::new(HistoryConfig::Sqlite(db)));
             }
             HistoryConfig::Mysql(config) => {
                 debug!("Using MySQL history with config: {config:?}");
-                q.history = History::new(HistoryConfig::Mysql(config));
+                q.history = Some(History::new(HistoryConfig::Mysql(config)));
             }
             _ => {
-                panic!("Invalid history configuration: {history:?}");
+                q.history = None;
             }
             
         }
@@ -220,11 +220,15 @@ impl Query {
     }
 
     async fn summarize_history(&self) -> Result<(String, String),Box<dyn std::error::Error>> {
-        let mut history = self.history.read(&self.setup.chatuuid)?;
-        if history.is_empty() {
+        let mut history = if let Some(history) = &self.history {
+            let history = history.read(&self.setup.chatuuid)?;
+            if history.is_empty() {
+                return Ok((String::new(), String::new()));
+            }
+            history
+        } else {
             return Ok((String::new(), String::new()));
-        }
-
+        };
 
         let latest = history.pop().unwrap();
         let result =if !history.is_empty() {
@@ -249,7 +253,11 @@ impl Query {
         let resp = self.send_raw(UserPrompt::Default(prompt)).await?;
         let mut msg =ChatMessage { id: None, user: self.setup.user.clone(), user_message: self.setup.prompt.clone(), bot_response: resp.clone(), timestamp: 0 , chatuuid: self.setup.chatuuid.clone() };
         debug!("Storing message in history: {msg:?}");
-        let x = self.history.store(&mut msg);
+        let x = if let Some(history) = &mut self.history {
+            history.store(&mut msg)
+        } else {
+            Ok(())
+        };
         if let Err(e) = x {
             warn!("Error storing message in history: {}", e);
             Err(e.into())
