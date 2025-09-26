@@ -2,7 +2,7 @@ mod prompter;
 mod history;
 mod components;
 
-use std::collections::HashMap;
+//use std::collections::HashMap;
 
 pub use history::HistoryConfig;
 use crate::history::HistoryTrait;
@@ -167,17 +167,17 @@ impl Query {
         //Read history
         let (latest, history) = self.summarize_history().await.unwrap_or_default();
         let history = if !history.is_empty() {
-            format!("Summarized chat history: {history}\n\nLatest Message: {latest}\n\n",)
+            format!("SUMMARIZED CHAT:\n{history}\n\nLATEST MESSAGE: {latest}\n\n",)
         } else {
             String::new()
         };
-
+/* Removed bad tool handling
         let tool = if self.components.is_some() {
             let components = self.components.clone().unwrap();
             debug!("Available components: {:?}", components.len());
-            let tool_list = components.get_tools().await;
-            let list: HashMap<String, String> = if !tool_list.is_empty() {
-                let prompt = format!("User Query: {}\n\nAvailable Tools: {}\n\nBased on the above, which tools should be used to best address the user's query? For each tool, if a parameter is needed, output in the format: tool_name|parameter. If no parameter is needed, just output the tool name. List only the tool names (and parameters if any), separated by commas. If none are needed, return 'none'.\n\nExample output:\nsearch|manual.pdf, summarize, translate|sv\n", self.setup.prompt, tool_list);
+            //let tool_list = components.get_tools().await;
+            //let list: HashMap<String, String> = if !tool_list.is_empty() {
+                //let prompt = format!("User Query: {}\n\nAvailable Tools: {}\n\nBased on the above, which tools should be used to best address the user's query? For each tool, if a parameter is needed, output in the format: tool_name|parameter. If no parameter is needed, just output the tool name. List only the tool names (and parameters if any), separated by commas. If none are needed, return 'none'.\n\nExample output:\nsearch|manual.pdf, summarize, translate|sv\n", self.setup.prompt, tool_list);
                 let x =self.send_raw(UserPrompt::Model("gemma3:27b".to_string(), prompt)).await.unwrap_or_default();
                 debug!("Tool selection response: {}", x);
                 let v =x.split(',')
@@ -200,17 +200,18 @@ impl Query {
             String::new()
         };
         debug!("Tool execution result: {}", tool);
-        let context = if !self.context.is_empty() || !tool.is_empty() {
-            format!("Context: {}\n\n{}\n\n", self.context, tool)
+        */
+        let context = if !self.context.is_empty() {
+            format!("CONTEXT: {}\n\n", self.context)
         } else {
             String::new()
         };
 
         let qsetup = self.setup.clone();
 
-        let message = format!("User Query:\n{}\n\n", qsetup.prompt);
+        let message = format!("USER QUERY: {}\n\n", qsetup.prompt);
 
-        let constraint = format!("{}\n\n",qsetup.constraint.as_deref().unwrap_or(""));
+        let constraint = format!("CONSTRAINT: {}\n\n",qsetup.constraint.as_deref().unwrap_or(""));
 
         let style = qsetup.style.as_deref().unwrap_or("");
         let p = format!("{constraint}{history}{context}{message}{style}");
@@ -233,17 +234,17 @@ impl Query {
         let latest = history.pop().unwrap();
         let result =if !history.is_empty() {
             let history_text: String = history.iter()
-                .map(|msg| format!("{}: {}\nResponse:{}\n", msg.user, msg.user_message, msg.bot_response))
+                .map(|msg| format!("USER: {}\nMESSAGE: {}\nRESPONSE: {}\n", msg.user, msg.user_message, msg.bot_response))
                 .collect();
             let prompt = format!(
-                "Summarize the following chat history in a concise paragraph:\n\n{history_text}",
+                "QUERY: Summarize the following chat history in a concise paragraph:\n\nCHAT_HISTORY: {history_text}\n",
             );
             self.send_raw(UserPrompt::Model("mistral".to_string(), prompt)).await?
         } else {
             String::new()
         };
 
-        let latest = format!("{}: {}\nResponse:{}\n", latest.user, latest.user_message, latest.bot_response);
+        let latest = format!("USER: {}\nMESSAGE: {}\nRESPONSE: {}\n", latest.user, latest.user_message, latest.bot_response);
 
         //debug!("Summarized history: {result}");
         Ok((latest,result))
@@ -305,7 +306,7 @@ impl Query {
     pub async fn classify_query(&mut self) -> Result<String, Box<dyn std::error::Error>> {
     
         let r = if let Some(classification) = &self.classification {
-            let prompt = format!("Classify following prompt by these criteria:\n{} \n\nPROMPT: {} ",classification, self.setup.prompt);
+            let prompt = format!("QUERY: Classify following prompt by these criteria: {}\n\nPROMPT: {}", classification, self.setup.prompt);
             self.send(prompt).await?
         } else {
             String::new()
