@@ -136,6 +136,12 @@ impl Query {
         debug!("VectorCount: {:?}", y.embeddings[0].len());
         Ok(y.embeddings[0].clone())
     }
+
+    pub async fn get_history(uuid: &str, history: HistoryConfig) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
+        let h = History::new(history);
+        let msgs = h.read(uuid)?;
+        Ok(msgs)
+    }
 }
 
 impl Query {
@@ -326,6 +332,7 @@ impl Query {
     }
 
 }
+
 
 
 #[macro_export]
