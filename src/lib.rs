@@ -1,5 +1,6 @@
 mod prompter;
 mod history;
+#[cfg(feature="tools")]
 mod components;
 
 //use std::collections::HashMap;
@@ -12,6 +13,7 @@ use ollama_rs::generation::{completion::request::GenerationRequest, embeddings::
 pub use ollama_rs::models::ModelOptions;
 
 use crate::history::History;
+#[cfg(feature="tools")]
 pub use crate::components::{ComponentRegistry, Component, ComponentSource, tools::Tool as Tool, prompt::Prompt as Prompt, resource::Resource, sampling::Sampling};
 
 
@@ -72,6 +74,7 @@ pub struct QuerySetup {
     pub chatuuid: String,
     pub model_name: String,
     pub prompt: String,
+#[cfg(feature="tools")]
     pub components: Option<ComponentRegistry>,
     pub style: Option<String>,
     pub constraint: Option<String>,
@@ -86,6 +89,7 @@ impl Default for QuerySetup {
             prompt: String::new(),
             style: None,
             constraint: None,
+            #[cfg(feature="tools")]
             components: None,
         }
     }
@@ -111,19 +115,20 @@ pub struct Query {
     pub context: String,
     pub options: ModelOptions,
     classification: Option<String>,
+    #[cfg(feature="tools")]
     pub components: Option<ComponentRegistry>,
 }
 
 impl Query {
     pub async fn embed(config:(String,u16,String),chunk:String) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
         let (url, port, model) = config;
-        let ollama = ollama_rs::Ollama::new(format!("{}:{}",url,port), port);
+        let ollama = ollama_rs::Ollama::new(format!("{url}:{port}"), port);
         let e = EmbeddingsInput::Single(chunk);
         let x  = ollama.generate_embeddings(request::GenerateEmbeddingsRequest::new(model.to_string(), e)).await;
         let y = match x {
             Ok(response) => response,
             Err(e) => {
-                debug!("Error generating embeddings: {:?}", e);
+                debug!("Error generating embeddings: {e:?}");
                 return Ok(vec![]); // Return an empty vector on error
             }
         };
@@ -216,7 +221,7 @@ impl Query {
         let style = qsetup.style.as_deref().unwrap_or("");
         let p = format!("{constraint}{history}{context}{message}{style}");
         let x = self.send(p).await.unwrap_or_default();
-        log::debug!("Query result: {:?}", x);
+        log::debug!("Query result: {x:?}");
         Ok(x)
     }
 
@@ -260,8 +265,8 @@ impl Query {
             Ok(())
         };
         if let Err(e) = x {
-            warn!("Error storing message in history: {}", e);
-            Err(e.into())
+            warn!("Error storing message in history: {e}");
+            Err(e)
         } else {
             Ok(resp)
         }

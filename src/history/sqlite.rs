@@ -32,6 +32,7 @@ impl SqliteHistory {
             "CREATE TABLE IF NOT EXISTS chat_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user TEXT NOT NULL,
+                chatuuid TEXT NOT NULL,
                 message TEXT NOT NULL,
                 timestamp INTEGER NOT NULL,
                 response TEXT
@@ -46,30 +47,32 @@ impl SqliteHistory {
 }
 
 impl HistoryTrait for SqliteHistory {
-    fn store(&mut self, msg: &ChatMessage) -> Result<(), Box<dyn std::error::Error>> {
+    fn store(&mut self, msg: &mut ChatMessage) -> Result<(), Box<dyn std::error::Error>> {
         let user = &msg.user;
         let message = &msg.user_message;
         let timestamp = msg.timestamp;
         let response = &msg.bot_response;
+        let chatuuid = &msg.chatuuid;
         let conn = self.pool.get()?;
         conn.execute(
-            "INSERT INTO chat_history (user, message, response, timestamp) VALUES (?1, ?2, ?3, ?4)",
-            params![user, message, response, timestamp],
+            "INSERT INTO chat_history (user chatuuid, message, response, timestamp) VALUES (?1, ?2, ?3, ?4)",
+            params![user, chatuuid, message, response, timestamp],
         )?;
 
         Ok(())
     }
 
-    fn read(&self) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
+    fn read(&self, chatuuid: &str) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
         let limit = 100; // Default limit for the number of messages to read
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
-            "SELECT id, user, message, timestamp, response FROM chat_history ORDER BY timestamp DESC LIMIT ?1"
+            "SELECT id, user, message, timestamp, response FROM chat_history WHERE chatuuid = '?1' ORDER BY timestamp DESC LIMIT ?2"
         )?;
-        let rows = stmt.query_map(params![limit as i64], |row| {
+        let rows = stmt.query_map(params![limit as i64, chatuuid], |row| {
             Ok(ChatMessage {
                 id: row.get(0)?,
                 user: row.get(1)?,
+                chatuuid: chatuuid.to_string(),
                 user_message: row.get(2)?,
                 timestamp: row.get(3)?,
                 bot_response: row.get(4).unwrap_or_default(),

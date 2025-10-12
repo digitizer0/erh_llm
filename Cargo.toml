@@ -1,6 +1,6 @@
 [package]
 name = "erh_llm"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 
 [dependencies]
@@ -17,7 +17,8 @@ regex = "1.11"
 futures = "0.3"
 
 [features]
-default = ["mysql_hist"]
+default = []
 sqlite_hist = ["rusqlite", "uuid","r2d2", "r2d2_sqlite"]
 mem_hist = ["once_cell"]
 mysql_hist = ["mysql"]
+tools = []

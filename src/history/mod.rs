@@ -34,6 +34,7 @@ pub enum HistoryConfig {
 
 #[derive(Debug, Default)]
 pub(crate)  struct History {
+#[cfg_attr(not(any(feature="mem_hist",feature="sqlite_hist",feature="mysql_hist")),allow(dead_code))]
     database: String,
 #[cfg(feature="mem_hist")]
     mem: Option<MemHistory>,
@@ -57,7 +58,7 @@ impl History {
 #[cfg(feature="mem_hist")] 
             mem: Some(MemHistory::new()),
 #[cfg(feature="sqlite_hist")]
-            sqlite: Some(SqliteHistory::new(cfgstr)),
+            sqlite: Some(SqliteHistory::new(cfgstr.clone())),
 #[cfg(feature="mysql_hist")]
             mysql: Some(MysqlHistory::new(cfgstr)),
         }
@@ -116,7 +117,7 @@ impl HistoryTrait for History {
 #[cfg(feature="sqlite_hist")]
         let m = if let Some(x) = &self.sqlite {
             debug!("Reading sqlite history");
-            x.read()?
+            x.read(chatuuid)?
         } else {
             debug!("No sqlite history found, returning empty vector.");
             vec![]
@@ -127,6 +128,12 @@ impl HistoryTrait for History {
             x.read(chatuuid)?
         } else {
             debug!("No mysql history found, returning empty vector.");
+            vec![]
+        };
+#[cfg(not(any(feature="mem_hist",feature="sqlite_hist",feature="mysql_hist")))]
+        let m = {
+            _ = chatuuid;
+            debug!("No history feature enabled, returning empty vector.");
             vec![]
         };
         Ok(m)
