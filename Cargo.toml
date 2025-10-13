@@ -15,10 +15,13 @@ anyhow = "1.0"
 mysql = { version = "26.0", optional = true }
 regex = "1.11"
 futures = "0.3"
+tiberius = { version = "0.12", optional = true }
+tokio-util = { version = "0.7", features = ["compat"], optional = true }
 
 [features]
 default = []
 sqlite_hist = ["rusqlite", "uuid","r2d2", "r2d2_sqlite"]
 mem_hist = ["once_cell"]
 mysql_hist = ["mysql"]
+mssql_hist = ["tiberius", "tokio-util"]
 tools = []

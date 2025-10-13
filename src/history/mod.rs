@@ -1,3 +1,6 @@
+#[allow(unused)]
+use std::sync::Arc;
+
 use log::debug;
 
 use crate::ChatMessage;
@@ -14,7 +17,10 @@ mod mem;
 mod sqlite;
 #[cfg(feature="sqlite_hist")]
 use crate::history::sqlite::SqliteHistory;
-
+#[cfg(feature="mssql_hist")]
+mod mssql;
+#[cfg(feature="mssql_hist")]
+use crate::history::mssql::MsSqlHistory;
 
 pub(crate) trait HistoryTrait {
     fn store(&mut self, msg: &mut ChatMessage) -> Result<(), Box<dyn std::error::Error>>;
@@ -27,12 +33,14 @@ pub enum HistoryConfig {
     Mem,
     Sqlite(String),
     Mysql(String),
+    MsSql(String),
     None,
     #[default]
     Unknown,
 }
 
 #[derive(Debug, Default)]
+#[allow(unused)]
 pub(crate)  struct History {
 #[cfg_attr(not(any(feature="mem_hist",feature="sqlite_hist",feature="mysql_hist")),allow(dead_code))]
     database: String,
@@ -42,6 +50,8 @@ pub(crate)  struct History {
     sqlite: Option<SqliteHistory>,
 #[cfg(feature="mysql_hist")]
     mysql: Option<MysqlHistory>,
+#[cfg(feature="mssql_hist")]
+    mssql: Option<MsSqlHistory>,
 }
 
 impl History {
@@ -61,6 +71,8 @@ impl History {
             sqlite: Some(SqliteHistory::new(cfgstr.clone())),
 #[cfg(feature="mysql_hist")]
             mysql: Some(MysqlHistory::new(cfgstr)),
+#[cfg(feature="mssql_hist")]
+            mssql: Some(MsSqlHistory::new(cfgstr)),
         }
     }
 }
@@ -105,6 +117,7 @@ impl HistoryTrait for History {
         Ok(())
 
     }
+    #[allow(unused)]
     fn read(&self, chatuuid: &str) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
 #[cfg(feature="mem_hist")]
         let m = if let Some(x) = &self.mem {
@@ -130,12 +143,20 @@ impl HistoryTrait for History {
             debug!("No mysql history found, returning empty vector.");
             vec![]
         };
-#[cfg(not(any(feature="mem_hist",feature="sqlite_hist",feature="mysql_hist")))]
+#[cfg(feature="mssql_hist")]
+        let m = if let Some(x) = &self.mssql {
+            debug!("Reading mssql history");
+            x.read(chatuuid)?
+        } else {
+            debug!("No mssql history found, returning empty vector.");
+            vec![]
+        };
+#[cfg(not(any(feature="mem_hist", feature="sqlite_hist", feature="mysql_hist", feature="mssql_hist")))]
         let m = {
-            _ = chatuuid;
             debug!("No history feature enabled, returning empty vector.");
             vec![]
         };
+        
         Ok(m)
     }
     
