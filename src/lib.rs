@@ -1,4 +1,3 @@
-mod prompter;
 mod history;
 #[cfg(feature="tools")]
 mod components;
