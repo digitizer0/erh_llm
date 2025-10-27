@@ -8,7 +8,7 @@ pub use history::HistoryConfig;
 use crate::history::HistoryTrait;
 
 use log::{debug, warn};
-use ollama_rs::generation::{completion::request::GenerationRequest, embeddings::request::{self, EmbeddingsInput}};
+use ollama_rs::{coordinator::Coordinator, generation::{chat, embeddings::request::{self, EmbeddingsInput}}};
 pub use ollama_rs::models::ModelOptions;
 
 use crate::history::History;
@@ -16,8 +16,9 @@ use crate::history::History;
 pub use crate::components::{ComponentRegistry, Component, ComponentSource, tools::Tool as Tool, prompt::Prompt as Prompt, resource::Resource, sampling::Sampling};
 
 
-#[derive(Debug,Clone,Default,PartialEq)]
+#[derive(Debug,Clone,Default)]
 pub struct ChatMessage {
+    pub ollama: Option<chat::ChatMessage>,
     pub id: Option<i32>,
     pub user: String,
     pub user_message: String,
@@ -181,36 +182,7 @@ impl Query {
         } else {
             String::new()
         };
-/* Removed bad tool handling
-        let tool = if self.components.is_some() {
-            let components = self.components.clone().unwrap();
-            debug!("Available components: {:?}", components.len());
-            //let tool_list = components.get_tools().await;
-            //let list: HashMap<String, String> = if !tool_list.is_empty() {
-                //let prompt = format!("User Query: {}\n\nAvailable Tools: {}\n\nBased on the above, which tools should be used to best address the user's query? For each tool, if a parameter is needed, output in the format: tool_name|parameter. If no parameter is needed, just output the tool name. List only the tool names (and parameters if any), separated by commas. If none are needed, return 'none'.\n\nExample output:\nsearch|manual.pdf, summarize, translate|sv\n", self.setup.prompt, tool_list);
-                let x =self.send_raw(UserPrompt::Model("gemma3:27b".to_string(), prompt)).await.unwrap_or_default();
-                debug!("Tool selection response: {}", x);
-                let v =x.split(',')
-                    .map(|s| s.trim().to_lowercase())
-                    .filter(|s| s != "none" && !s.is_empty())
-                    .collect::<Vec<String>>();
-                let hm = v.iter().fold(HashMap::new(), |mut hm, s| {
-                    let mut parts = s.splitn(2, '|');
-                    let key = parts.next().unwrap_or("").to_string();
-                    let value = parts.next().unwrap_or("").to_string();
-                    hm.insert(key, value);
-                    hm
-                });
-                hm
-            } else {
-                HashMap::new()
-            };
-            components.execute_tools(&list).await.unwrap_or_default()
-        } else {
-            String::new()
-        };
-        debug!("Tool execution result: {}", tool);
-        */
+
         let context = if !self.context.is_empty() {
             format!("CONTEXT: {}\n\n", self.context)
         } else {
@@ -262,7 +234,7 @@ impl Query {
 
     pub async fn send(&mut self, prompt: String) -> Result<String, Box<dyn std::error::Error>> {
         let resp = self.send_raw(UserPrompt::Default(prompt)).await?;
-        let mut msg =ChatMessage { id: None, user: self.setup.user.clone(), user_message: self.setup.prompt.clone(), bot_response: resp.clone(), timestamp: 0 , chatuuid: self.setup.chatuuid.clone() };
+        let mut msg =ChatMessage { id: None, user: self.setup.user.clone(), user_message: self.setup.prompt.clone(), bot_response: resp.clone(), timestamp: 0 , chatuuid: self.setup.chatuuid.clone(),..Default::default() };
         debug!("Storing message in history: {msg:?}");
         let x = if let Some(history) = &mut self.history {
             history.store(&mut msg)
@@ -286,7 +258,7 @@ impl Query {
                 (p, model_name)
             }
         };
-        debug!("Sending prompt!!: {text}");
+        //debug!("Sending prompt!!: {text}");
         let resp = match &self.connection {
             LLM::Ollama(host, port, model_name) => {
                 let model = if model.is_empty() {
@@ -294,23 +266,20 @@ impl Query {
                 } else {
                     model.as_str()
                 };
-                self.send_ollama(host, *port, model,text).await?
+                let history = vec![];
+                let ollama = ollama_rs::Ollama::new(format!("{host}:{port}"), *port);
+                let mut x = Coordinator::new(ollama, model.to_string(), history)
+                    .options(self.options.clone());
+
+                let cm = chat::ChatMessage::new(chat::MessageRole::Assistant, text);
+                let resp = x.chat(vec![cm]).await?;
+                resp.message.content
             }
             // Add other LLMs here as needed
             _ => panic!("Not possible"),
         };
         debug!("Received response: {resp}");
         Ok(resp)
-    }
- 
-    async fn send_ollama(&self, host: &str, port: u16, model_name: &str, prompt: String) -> Result<String, Box<dyn std::error::Error>> {
-        let ollama = ollama_rs::Ollama::new(format!("{host}:{port}"), port);
-        let response = ollama
-            .generate(GenerationRequest::new(model_name.to_string(), prompt).options(self.options.clone()))
-            .await?;
-
-        
-        Ok(response.response)
     }
 
     pub async fn classify_query(&mut self) -> Result<String, Box<dyn std::error::Error>> {
