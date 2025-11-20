@@ -5,6 +5,7 @@ mod components;
 //use std::collections::HashMap;
 
 pub use history::HistoryConfig;
+use mistralai_client::v1::{chat::{ChatMessage as MistralChatMessage, ChatParams}, client::Client as MistralClient, constants::Model};
 use crate::history::HistoryTrait;
 
 use log::{debug, warn};
@@ -60,6 +61,7 @@ impl ChatMessage {
 #[derive(Debug,Clone,PartialEq)]
 pub enum LLM {
     Ollama(String, u16, String),  // (host, port, model_name)
+    MistralAI(String),
     Dummy, // Placeholder for other LLMs
     // Add other LLMs as needed
 }
@@ -274,6 +276,23 @@ impl Query {
                 let cm = chat::ChatMessage::new(chat::MessageRole::Assistant, text);
                 let resp = x.chat(vec![cm]).await?;
                 resp.message.content
+            }
+            LLM::MistralAI(apikey) => {
+                let client = MistralClient::new(Some(apikey.clone()), None, None, None).unwrap();
+                let model = Model::MistralMediumLatest;
+                let messages = vec![
+                    MistralChatMessage {
+                        role:mistralai_client::v1::chat::ChatMessageRole::User,
+                        content:text.clone(),
+                        tool_calls: None, }
+                ];
+                let options = Some(ChatParams {
+                    ..Default::default()
+                });
+
+                debug!("Sending prompt to MistralAI: {text}");
+                let response = client.chat(model, messages, options)?;
+                response.object
             }
             // Add other LLMs here as needed
             _ => panic!("Not possible"),

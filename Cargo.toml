@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 ollama-rs = "0.3"
+mistralai-client = "0.14"
 log = "0.4"
 rusqlite = { version = "0.37", optional = true }
 uuid = { version = "1.17", optional = true }
