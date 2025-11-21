@@ -460,6 +460,7 @@ dependencies = [
  "regex",
  "rusqlite",
  "tiberius",
+ "tokio",
  "tokio-util",
  "uuid",
 ]

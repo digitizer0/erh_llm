@@ -165,6 +165,10 @@ impl Query {
                 debug!("Using MySQL history with config: {config:?}");
                 q.history = Some(History::new(HistoryConfig::Mysql(config)));
             }
+            HistoryConfig::MsSql(config) => {
+                debug!("Using MSSQL history with config: {config:?}");
+                q.history = Some(History::new(HistoryConfig::MsSql(config)));
+            }
             _ => {
                 q.history = None;
             }
@@ -273,9 +277,16 @@ impl Query {
                 let mut x = Coordinator::new(ollama, model.to_string(), history)
                     .options(self.options.clone());
 
-                let cm = chat::ChatMessage::new(chat::MessageRole::Assistant, text);
-                let resp = x.chat(vec![cm]).await?;
-                resp.message.content
+                let cm = chat::ChatMessage::new(chat::MessageRole::User, text);
+                debug!("Sending prompt to Ollama: {:?}", cm);
+                let resp = x.chat(vec![cm]).await;
+                match resp {
+                    Ok(response) => response.message.content,
+                    Err(e) => {
+                        debug!("Error communicating with Ollama: {e:?}");
+                        return Err(Box::new(e));
+                    }
+                }
             }
             LLM::MistralAI(apikey) => {
                 let client = MistralClient::new(Some(apikey.clone()), None, None, None).unwrap();

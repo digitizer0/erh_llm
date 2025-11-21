@@ -56,23 +56,62 @@ pub(crate)  struct History {
 
 impl History {
     pub(crate) fn new(cfg: HistoryConfig) -> Self {
-        let cfgstr = if let HistoryConfig::Sqlite(a) = cfg.clone() {
-            a
-        } else if let HistoryConfig::Mysql(a) = cfg.clone() {
-            a
-        } else {
-            panic!("Invalid configuration for History: {cfg:?}");
-        };
-        History {
-            database: cfgstr.clone(),
+        match cfg {
+            HistoryConfig::Mem => {
+                History {
+                    database: String::new(),
 #[cfg(feature="mem_hist")] 
-            mem: Some(MemHistory::new()),
+                    mem: Some(MemHistory::new()),
 #[cfg(feature="sqlite_hist")]
-            sqlite: Some(SqliteHistory::new(cfgstr.clone())),
+                    sqlite: None,
 #[cfg(feature="mysql_hist")]
-            mysql: Some(MysqlHistory::new(cfgstr)),
+                    mysql: None,
 #[cfg(feature="mssql_hist")]
-            mssql: Some(MsSqlHistory::new(cfgstr)),
+                    mssql: None,
+                }
+            }
+            HistoryConfig::Sqlite(db) => {
+                History {
+                    database: db.clone(),
+#[cfg(feature="mem_hist")] 
+                    mem: None,
+#[cfg(feature="sqlite_hist")]
+                    sqlite: Some(SqliteHistory::new(db)),
+#[cfg(feature="mysql_hist")]
+                    mysql: None,
+#[cfg(feature="mssql_hist")]
+                    mssql: None,
+                }
+            }
+            HistoryConfig::Mysql(config) => {
+                History {
+                    database: config.clone(),
+#[cfg(feature="mem_hist")] 
+                    mem: None,
+#[cfg(feature="sqlite_hist")]
+                    sqlite: None,
+#[cfg(feature="mysql_hist")]
+                    mysql: Some(MysqlHistory::new(config)),
+#[cfg(feature="mssql_hist")]
+                    mssql: None,
+                }
+            }
+            HistoryConfig::MsSql(config) => {
+                History {
+                    database: config.clone(),
+#[cfg(feature="mem_hist")] 
+                    mem: None,
+#[cfg(feature="sqlite_hist")]
+                    sqlite: None,
+#[cfg(feature="mysql_hist")]
+                    mysql: None,
+#[cfg(feature="mssql_hist")]
+                    mssql: Some(MsSqlHistory::new(config)),
+                }
+            }
+            _ => {
+                panic!("Invalid configuration for History: {cfg:?}");
+            }
         }
     }
 }
@@ -80,84 +119,61 @@ impl History {
 impl HistoryTrait for History {
     fn store(&mut self, msg: &mut ChatMessage) -> Result<(), Box<dyn std::error::Error>> {
         debug!("Storing message in history: {msg:?}");
+        
 #[cfg(feature="mem_hist")]
-        {
-            if let Some(x) = &mut self.mem {
-                debug!("Found existing memory history with {} messages.", x.len());
-                x.store(msg)?;
-            } else {
-                debug!("No memory history found, creating a new one.");
-                self.mem = Some(MemHistory::new());
-                self.mem.as_mut().unwrap().store(msg)?;
-            }
+        if let Some(x) = &mut self.mem {
+            debug!("Using memory history");
+            return x.store(msg);
         }
 
 #[cfg(feature="sqlite_hist")]
-        {
-            if let Some(x) = &mut self.sqlite {
-                debug!("Found existing memory history with");
-                x.store(msg)?;
-            } else {
-                debug!("No memory history found, creating a new one.");
-                self.sqlite = Some(SqliteHistory::new(self.database.clone()));
-                self.sqlite.as_mut().unwrap().store(msg)?;
-            }
+        if let Some(x) = &mut self.sqlite {
+            debug!("Using sqlite history");
+            return x.store(msg);
         }
-#[cfg(feature="mysql_hist")]
-        {
-            if let Some(x) = &mut self.mysql {
-                debug!("Found existing mysql history with");
-                x.store(msg)?;
-            } else {
-                debug!("No mysql history found, creating a new one.");
-                self.mysql = Some(MysqlHistory::new(self.database.clone()));
-                self.mysql.as_mut().unwrap().store(msg)?;
-            }
-        }
-        Ok(())
 
+#[cfg(feature="mysql_hist")]
+        if let Some(x) = &mut self.mysql {
+            debug!("Using mysql history");
+            return x.store(msg);
+        }
+
+#[cfg(feature="mssql_hist")]
+        if let Some(x) = &mut self.mssql {
+            debug!("Using mssql history");
+            return x.store(msg);
+        }
+
+        Err("No history backend configured".into())
     }
     #[allow(unused)]
     fn read(&self, chatuuid: &str) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
 #[cfg(feature="mem_hist")]
-        let m = if let Some(x) = &self.mem {
+        if let Some(x) = &self.mem {
             debug!("Reading memory history with {} messages.", x.len());
-            x.read()?
-        } else {
-            debug!("No memory history found, returning empty vector.");
-            vec![]
-        };
+            return Ok(x.read()?);
+        }
+
 #[cfg(feature="sqlite_hist")]
-        let m = if let Some(x) = &self.sqlite {
+        if let Some(x) = &self.sqlite {
             debug!("Reading sqlite history");
-            x.read(chatuuid)?
-        } else {
-            debug!("No sqlite history found, returning empty vector.");
-            vec![]
-        };
+            return Ok(x.read(chatuuid)?);
+        }
+
 #[cfg(feature="mysql_hist")]
-        let m = if let Some(x) = &self.mysql {
+        if let Some(x) = &self.mysql {
             debug!("Reading mysql history");
-            x.read(chatuuid)?
-        } else {
-            debug!("No mysql history found, returning empty vector.");
-            vec![]
-        };
+            return Ok(x.read(chatuuid)?);
+        }
+
 #[cfg(feature="mssql_hist")]
-        let m = if let Some(x) = &self.mssql {
+        if let Some(x) = &self.mssql {
             debug!("Reading mssql history");
-            x.read(chatuuid)?
-        } else {
-            debug!("No mssql history found, returning empty vector.");
-            vec![]
-        };
-#[cfg(not(any(feature="mem_hist", feature="sqlite_hist", feature="mysql_hist", feature="mssql_hist")))]
-        let m = {
-            debug!("No history feature enabled, returning empty vector.");
-            vec![]
-        };
-        
-        Ok(m)
+            return Ok(x.read(chatuuid)?);
+        }
+
+        debug!("No history backend configured, returning empty vector.");
+        Ok(vec![])
     }
     
 }
