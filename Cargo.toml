@@ -27,3 +27,16 @@ mem_hist = ["once_cell"]
 mysql_hist = ["mysql"]
 mssql_hist = ["tiberius", "tokio-util", "tokio"]
 tools = []
+
+#[lints.clippy]
+# Deny dangerous patterns
+#unwrap_used = "deny"
+#expect_used = "deny"
+#panic = "deny"
+# Additional useful lints
+#pedantic = "warn"
+#nursery = "warn"
+# Allow some pedantic lints that might be too noisy
+#missing_errors_doc = "allow"
+#missing_panics_doc = "allow"
+#module_name_repetitions = "allow"

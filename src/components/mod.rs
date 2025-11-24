@@ -52,7 +52,7 @@ impl ComponentRegistry {
         self.components.push(component);
     }
 
-    pub(crate) async fn get_tools(&self) -> String {
+    pub(crate) async fn _get_tools(&self) -> String {
         let mut selected_tools = Vec::new();
         for component in &self.components {
             for tool in &component.tools {
@@ -67,7 +67,7 @@ impl ComponentRegistry {
         selected_tools.join(", ")
     }
 
-    pub(crate) async fn execute_tools(&self, tool_list: &std::collections::HashMap<String, String>) -> Option<String> {
+    pub(crate) async fn _execute_tools(&self, tool_list: &std::collections::HashMap<String, String>) -> Option<String> {
         let mut results = Vec::new();
         for (tool_name, param) in tool_list {
             for component in &self.components {
