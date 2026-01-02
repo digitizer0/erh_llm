@@ -4,8 +4,9 @@ version = "0.3.7"
 edition = "2024"
 
 [dependencies]
-ollama-rs = { version = "0.3", features = ["macros", "tool-implementations"] }
-#ollama-rs-macros = "0.3.3"
+#ollama-rs = { version = "0.3", features = ["macros", "tool-implementations"] }
+#ollama-rs = { path = "../ollama-rs/ollama-rs", features = ["macros", "tool-implementations"] }
+ollama-rs = { git = "http://git.stenbergs.se/Sten/ollama-rs.git", branch = "sten", features = ["macros", "tool-implementations"] }
 mistralai-client = "0.14"
 log = "0.4"
 rusqlite = { version = "0.38", optional = true }

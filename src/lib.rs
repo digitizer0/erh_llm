@@ -2,10 +2,9 @@ mod history;
 #[cfg(feature="tools")]
 mod components;
 
-//use std::collections::HashMap;
-
 pub use history::HistoryConfig;
 use mistralai_client::v1::{chat::{ChatMessage as MistralChatMessage, ChatParams}, client::Client as MistralClient, constants::Model};
+
 use crate::history::HistoryTrait;
 
 use log::{debug, warn};
@@ -181,6 +180,7 @@ impl Query {
     // Combine the retrieved chunks with the user message
     pub async fn execute(&mut self) -> Result<String, Box<dyn std::error::Error>> {
         debug!("Running query with message: {}", self.setup.prompt);
+        debug!("ComponentRegistry: {:?}", self.components.as_ref().map(|c| c.components.len()));
         //Read history
         let (latest, history) = self.summarize_history().await.unwrap_or_default();
         let history = if !history.is_empty() {
@@ -281,7 +281,11 @@ impl Query {
 
                 #[cfg(feature="tools")]
                 {
-
+                    if let Some(components) = &self.components {
+                        debug!("Adding components/tools to Ollama coordinator");
+                        coordinator = components.clone().add_tools(coordinator);
+                    }
+                    log::debug!("Adding built-in tool: get_cpu_temperature");
                     coordinator = coordinator.add_tool(components::get_cpu_temperature);
                 }
                 

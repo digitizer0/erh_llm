@@ -1,11 +1,12 @@
 use std::{pin::Pin, sync::Arc};
 use futures::Future;
+use ollama_rs::generation::tools::ToolHolder;
 
 #[derive(Clone)]
 pub struct Tool  {
     pub name: String,
     pub description: String,
-    pub func: Arc<dyn for<'a> Fn(&'a String) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> + Send + Sync>
+    pub func: Arc<dyn for<'a> Fn(&'a String) -> Pin<Box<dyn Future<Output = String> + Send + Sync + 'a>> + Send + Sync>
 }
 
 
@@ -14,7 +15,7 @@ impl Tool {
     pub fn new<F, Fut>(name: &str, description: &str, func: F) -> Self
     where
         F: for<'a> Fn(&'a String) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = String> + Send + 'static,
+        Fut: Future<Output = String> + Send + Sync + 'static,
     {
         Tool {
             name: name.to_string(),
@@ -31,4 +32,21 @@ impl Tool {
         Some(fut)
     }
 }   
+
+impl ToolHolder for Tool {
+    fn call(
+        &mut self,
+        parameters: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<String, Box<dyn std::error::Error + Send + Sync>>> + '_ + Send + Sync>> {
+        Box::pin(async move {
+            let param_str = serde_json::to_string(&parameters)?;
+            let result = self.execute(&param_str).await;
+            match result {
+                Some(res) => Ok(res),
+                None => Err("Tool execution failed".into()),
+            }
+        })
+    }
+    
+}
 

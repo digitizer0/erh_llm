@@ -1936,8 +1936,7 @@ dependencies = [
 [[package]]
 name = "ollama-rs"
 version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db28711700d24a94bf78ce6a9df3bf55dc07c1bf68376574706ce2653ee3f5fc"
+source = "git+http://git.stenbergs.se/Sten/ollama-rs.git?branch=sten#92781679669f34f1ec9959929eacd28d082191a0"
 dependencies = [
  "async-stream",
  "calc",
@@ -1959,8 +1958,7 @@ dependencies = [
 [[package]]
 name = "ollama-rs-macros"
 version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1620745a12a9530ad256b53d728eaa638ca362b8dad47dd62d57667eb44a9c3"
+source = "git+http://git.stenbergs.se/Sten/ollama-rs.git?branch=sten#92781679669f34f1ec9959929eacd28d082191a0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2676,9 +2674,9 @@ dependencies = [
 
 [[package]]
 name = "schemars"
-version = "1.0.4"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82d20c4491bc164fa2f6c5d44565947a52ad80b9505d8e36f8d54c27c739fcd0"
+checksum = "54e910108742c57a770f492731f99be216a52fadd361b06c8fb59d74ccc267d2"
 dependencies = [
  "dyn-clone",
  "ref-cast",
@@ -2689,9 +2687,9 @@ dependencies = [
 
 [[package]]
 name = "schemars_derive"
-version = "1.0.4"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33d020396d1d138dc19f1165df7545479dcd58d93810dc5d646a16e55abefa80"
+checksum = "4908ad288c5035a8eb12cfdf0d49270def0a268ee162b75eeee0f85d155a7c45"
 dependencies = [
  "proc-macro2",
  "quote",

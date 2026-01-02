@@ -3,6 +3,9 @@ pub (crate) mod resource;
 pub (crate) mod sampling;
 pub (crate) mod tools;
 
+use ollama_rs::coordinator::Coordinator;
+use ollama_rs::history::ChatHistory;
+
 use crate::components::prompt::Prompt;
 use crate::components::resource::Resource;
 use crate::components::sampling::Sampling;
@@ -30,6 +33,7 @@ impl ComponentRegistry {
     }
 
     pub fn register(&mut self, component: Component) {
+        log::debug!("Registering component with {} tools", component.tools.len());
         self.components.push(component);
     }
 
@@ -37,6 +41,23 @@ impl ComponentRegistry {
         self.components.push(component);
     }
     
+    pub fn add_tools<T: ChatHistory>(&mut self, coordinator : Coordinator<T>) -> Coordinator<T> {
+        let mut cd = coordinator;
+        log::debug!("Adding tools from ComponentRegistry with {} components", self.components.len());
+        for component in &self.components {   
+            for tool in &component.tools {
+                log::debug!("Adding tool: {}", tool.name);
+                cd = cd.add_tool_custom(tool.name.as_str(), tool.description.as_str(), Box::new(tool.clone()));
+                
+            }
+            for resource in &component.resources {
+                log::debug!("Adding resource: {}", resource.name);
+                cd = cd.add_tool_custom(resource.name.as_str(), resource.description.as_str(), Box::new(resource.clone()));
+                
+            }
+        };
+        cd
+    }
 }
 
 
