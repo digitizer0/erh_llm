@@ -14,7 +14,7 @@ pub use ollama_rs::models::ModelOptions;
 
 use crate::history::History;
 #[cfg(feature="tools")]
-pub use crate::components::{ComponentRegistry, Component, ComponentSource, tools::Tool as Tool, prompt::Prompt as Prompt, resource::Resource, sampling::Sampling};
+pub use crate::components::{ComponentRegistry, Component, tools::Tool as Tool, prompt::Prompt as Prompt, resource::Resource, sampling::Sampling};
 
 
 #[derive(Debug,Clone,Default)]
@@ -274,12 +274,19 @@ impl Query {
                 };
                 let history = vec![];
                 let ollama = ollama_rs::Ollama::new(format!("{host}:{port}"), *port);
-                let mut x = Coordinator::new(ollama, model.to_string(), history)
+                let mut coordinator = Coordinator::new(ollama, model.to_string(), history)
                     .options(self.options.clone());
 
                 let cm = chat::ChatMessage::new(chat::MessageRole::User, text);
+
+                #[cfg(feature="tools")]
+                {
+
+                    coordinator = coordinator.add_tool(components::get_cpu_temperature);
+                }
+                
                 debug!("Sending prompt to Ollama: {:?}", cm);
-                let resp = x.chat(vec![cm]).await;
+                let resp = coordinator.chat(vec![cm]).await;
                 match resp {
                     Ok(response) => response.message.content,
                     Err(e) => {
@@ -300,6 +307,22 @@ impl Query {
                 let options = Some(ChatParams {
                     ..Default::default()
                 });
+
+                /* TODO: Add tool support for MistralAI                 
+                #[cfg(feature = "tools")]
+                {
+                    match &self.components {
+                        Some(comp) => {
+                            use mistralai_client::v1::{client, tool::{self, Tool}};
+
+                            debug!("Using tools/components in query");
+                            options
+                        },
+                        None =>  {
+                            debug!("No tools/components in query");
+                        }
+                    }
+                } */
 
                 debug!("Sending prompt to MistralAI: {text}");
                 let response = client.chat(model, messages, options)?;
