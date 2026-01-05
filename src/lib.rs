@@ -152,10 +152,6 @@ impl Query {
             ..Default::default()
         };
         match history {
-            HistoryConfig::Mem => {
-                debug!("Using in-memory history");
-                q.history = Some(History::new(HistoryConfig::Mem));
-            }
             HistoryConfig::Sqlite(db) => {
                 debug!("Using SQLite history with database: {db}");
                 q.history = Some(History::new(HistoryConfig::Sqlite(db)));

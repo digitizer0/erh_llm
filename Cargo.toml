@@ -9,27 +9,34 @@ edition = "2024"
 ollama-rs = { git = "http://git.stenbergs.se/Sten/ollama-rs.git", branch = "sten", features = ["macros", "tool-implementations"] }
 mistralai-client = "0.14"
 log = "0.4"
+anyhow = "1.0"
+regex = "1.12"
+futures = "0.3"
+
+#SQLite
 rusqlite = { version = "0.38", optional = true }
 uuid = { version = "1.17", optional = true }
 r2d2 = {version = "0.8", optional = true}
 r2d2_sqlite = {version = "0.32", optional = true}
-once_cell = { version = "1.21", optional = true }
-anyhow = "1.0"
+
+#MySQL
 mysql = { version = "26.0", optional = true }
-regex = "1.12"
-futures = "0.3"
+
+#MSSQL
 tokio = { version = "1.0", features = ["rt", "net", "rt-multi-thread"], optional = true }
 tiberius = { version = "0.12", optional = true }
 tokio-util = { version = "0.7", features = ["compat"], optional = true }
 
+#Fjall (To be used instead of memory history???)
+#fjall = { version = "3.0", optional = true }
 
+#Tools
 serde = { version = "1.0", features = ["derive"] , optional = true }
 serde_json = { version = "1.0", optional = true }
 
 [features]
 default = ["tools"]
 sqlite_hist = ["rusqlite", "uuid","r2d2", "r2d2_sqlite"]
-mem_hist = ["once_cell"]
 mysql_hist = ["mysql"]
 mssql_hist = ["tiberius", "tokio-util", "tokio"]
 tools = ["serde", "serde_json"]

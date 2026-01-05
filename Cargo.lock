@@ -710,7 +710,6 @@ dependencies = [
  "mistralai-client",
  "mysql",
  "ollama-rs",
- "once_cell",
  "r2d2",
  "r2d2_sqlite",
  "regex",
