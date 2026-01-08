@@ -4,6 +4,7 @@ mod components;
 
 pub use history::HistoryConfig;
 use mistralai_client::v1::{chat::{ChatMessage as MistralChatMessage, ChatParams}, client::Client as MistralClient, constants::Model};
+use serde::{Deserialize, Serialize};
 
 use crate::history::HistoryTrait;
 
@@ -15,6 +16,24 @@ use crate::history::History;
 #[cfg(feature="tools")]
 pub use crate::components::{ComponentRegistry, Component, tools::Tool as Tool, prompt::Prompt as Prompt, resource::Resource, sampling::Sampling};
 
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default,PartialEq)]
+pub struct ModelConfig {
+    pub model: String,
+    pub short: Option<String>,
+    pub tool: Option<bool>,
+    pub temperature: Option<f32>,
+    pub context_size: Option<u32>,
+}
+
+impl ModelConfig {
+    pub fn new(model: &str) -> Self {
+        ModelConfig {
+            model: model.to_string(),
+            ..Default::default()
+        }
+    }
+}
 
 #[derive(Debug,Clone,Default)]
 pub struct ChatMessage {
@@ -59,21 +78,21 @@ impl ChatMessage {
 
 #[derive(Debug,Clone,PartialEq)]
 pub enum LLM {
-    Ollama(String, u16, String),  // (host, port, model_name)
+    Ollama(String, u16, ModelConfig),  // (host, port, model_name)
     MistralAI(String),
     Dummy, // Placeholder for other LLMs
     // Add other LLMs as needed
 }
 pub enum UserPrompt {
     Default(String),
-    Model(String, String), // (model_name, prompt)
+    Model(ModelConfig, String), // (model_name, prompt)
 }
 
 #[derive(Clone)]
 pub struct QuerySetup {
     pub user: String,
     pub chatuuid: String,
-    pub model_name: String,
+    pub model : ModelConfig,
     pub prompt: String,
 #[cfg(feature="tools")]
     pub components: Option<ComponentRegistry>,
@@ -84,7 +103,7 @@ pub struct QuerySetup {
 impl Default for QuerySetup {
     fn default() -> Self {
         QuerySetup {
-            model_name: "mistral".to_string(),
+            model: ModelConfig::default(),
             user: String::new(),
             chatuuid: String::new(),
             prompt: String::new(),
@@ -104,7 +123,7 @@ impl QuerySetup {
 
 impl Default for LLM {
     fn default() -> Self {
-        LLM::Ollama("localhost".to_string(), 11434, "mistral".to_string())
+        LLM::Ollama("localhost".to_string(), 11434, ModelConfig::new("mistral"))
     }
 }
 
@@ -121,11 +140,13 @@ pub struct Query {
 }
 
 impl Query {
-    pub async fn embed(config:(String,u16,String),chunk:String) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    pub async fn embed(config:(String,u16,ModelConfig),chunk:String) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
         let (url, port, model) = config;
         let ollama = ollama_rs::Ollama::new(format!("{url}:{port}"), port);
         let e = EmbeddingsInput::Single(chunk);
-        let x  = ollama.generate_embeddings(request::GenerateEmbeddingsRequest::new(model.to_string(), e)).await;
+        let options = ModelOptions::default();
+        options.num_ctx(model.context_size.unwrap_or(2048) as u64);
+        let x  = ollama.generate_embeddings(request::GenerateEmbeddingsRequest::new(model.model.clone(), e)).await;
         let y = match x {
             Ok(response) => response,
             Err(e) => {
@@ -223,7 +244,7 @@ impl Query {
             let prompt = format!(
                 "QUERY: Summarize the following chat history in a concise paragraph:\n\nCHAT_HISTORY: {history_text}\n",
             );
-            self.send_raw(UserPrompt::Model("mistral".to_string(), prompt)).await?
+            self.send_raw(UserPrompt::Model(ModelConfig::new("mistral"), prompt)).await?
         } else {
             String::new()
         };
@@ -254,35 +275,28 @@ impl Query {
 
 
     pub async fn send_raw(&self, prompt: UserPrompt) -> Result<String, Box<dyn std::error::Error>> {
-        let (text,model) = match prompt {
-            UserPrompt::Default(p) => (p,String::new()),
-            UserPrompt::Model(model_name, p) => {
-                (p, model_name)
+        let (text,_model) = match prompt {
+            UserPrompt::Default(p) => (p,ModelConfig::default()),
+            UserPrompt::Model(model, p) => {
+                (p, model)
             }
         };
         //debug!("Sending prompt!!: {text}");
         let resp = match &self.connection {
-            LLM::Ollama(host, port, model_name) => {
-                let model = if model.is_empty() {
-                    model_name
-                } else {
-                    model.as_str()
-                };
+            LLM::Ollama(host, port, model) => {
                 let history = vec![];
                 let ollama = ollama_rs::Ollama::new(format!("{host}:{port}"), *port);
-                let mut coordinator = Coordinator::new(ollama, model.to_string(), history)
+                let mut coordinator = Coordinator::new(ollama, model.model.to_string(), history)
                     .options(self.options.clone());
 
                 let cm = chat::ChatMessage::new(chat::MessageRole::User, text);
 
                 #[cfg(feature="tools")]
-                {
+                if model.tool.unwrap_or(false){
                     if let Some(components) = &self.components {
                         debug!("Adding components/tools to Ollama coordinator");
                         coordinator = components.clone().add_tools(coordinator);
                     }
-                    log::debug!("Adding built-in tool: get_cpu_temperature");
-                    coordinator = coordinator.add_tool(components::get_cpu_temperature);
                 }
                 
                 debug!("Sending prompt to Ollama: {:?}", cm);

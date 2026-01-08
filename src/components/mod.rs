@@ -59,10 +59,3 @@ impl ComponentRegistry {
         cd
     }
 }
-
-
-/// Get the CPU temperature in Celsius.
-#[ollama_rs::function]
-pub (crate) async fn get_cpu_temperature() -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    Ok("42.7".to_string())
-}
