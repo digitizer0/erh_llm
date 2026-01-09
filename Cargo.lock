@@ -1934,8 +1934,8 @@ dependencies = [
 
 [[package]]
 name = "ollama-rs"
-version = "0.3.3"
-source = "git+http://git.stenbergs.se/Sten/ollama-rs.git?branch=sten#92781679669f34f1ec9959929eacd28d082191a0"
+version = "0.3.4"
+source = "git+http://git.stenbergs.se/Sten/ollama-rs.git?tag=0.3.4#c42b3afa214e7682ede30e83f12a78f65858e33d"
 dependencies = [
  "async-stream",
  "calc",
@@ -1956,8 +1956,8 @@ dependencies = [
 
 [[package]]
 name = "ollama-rs-macros"
-version = "0.3.3"
-source = "git+http://git.stenbergs.se/Sten/ollama-rs.git?branch=sten#92781679669f34f1ec9959929eacd28d082191a0"
+version = "0.3.4"
+source = "git+http://git.stenbergs.se/Sten/ollama-rs.git?tag=0.3.4#c42b3afa214e7682ede30e83f12a78f65858e33d"
 dependencies = [
  "proc-macro2",
  "quote",
