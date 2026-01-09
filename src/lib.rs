@@ -198,13 +198,6 @@ impl Query {
     pub async fn execute(&mut self) -> Result<String, Box<dyn std::error::Error>> {
         debug!("Running query with message: {}", self.setup.prompt);
         debug!("ComponentRegistry: {:?}", self.components.as_ref().map(|c| c.components.len()));
-        //Read history
-        let (latest, history) = self.summarize_history().await.unwrap_or_default();
-        let history = if !history.is_empty() {
-            format!("SUMMARIZED CHAT:\n{history}\n\nLATEST MESSAGE: {latest}\n\n",)
-        } else {
-            String::new()
-        };
 
         let context = if !self.context.is_empty() {
             format!("CONTEXT: {}\n\n", self.context)
@@ -219,13 +212,13 @@ impl Query {
         let constraint = format!("CONSTRAINT: {}\n\n",qsetup.constraint.as_deref().unwrap_or(""));
 
         let style = qsetup.style.as_deref().unwrap_or("");
-        let p = format!("{constraint}{history}{context}{message}{style}");
+        let p = format!("{constraint}{context}{message}STYLE: {style}\n\n");
         let x = self.send(p).await.unwrap_or_default();
         log::debug!("Query result: {x:?}");
         Ok(x)
     }
 
-    async fn summarize_history(&self) -> Result<(String, String),Box<dyn std::error::Error>> {
+    async fn _summarize_history(&self) -> Result<(String, String),Box<dyn std::error::Error>> {
         let mut history = if let Some(history) = &self.history {
             let history = history.read(&self.setup.chatuuid)?;
             if history.is_empty() {
@@ -284,7 +277,20 @@ impl Query {
         //debug!("Sending prompt!!: {text}");
         let resp = match &self.connection {
             LLM::Ollama(host, port, model) => {
-                let history = vec![];
+                //load local chat history into ollama coordinator
+                let history = if let Some(history) = &self.history {
+                    let msgs = history.read(&self.setup.chatuuid)?;
+                    let mut chat_history = vec![];
+                    for msg in msgs {
+                        let user_cm = chat::ChatMessage::new(chat::MessageRole::User, msg.user_message.clone());
+                        chat_history.push(user_cm);
+                        let bot_cm = chat::ChatMessage::new(chat::MessageRole::Assistant, msg.bot_response.clone());
+                        chat_history.push(bot_cm);
+                    }
+                    chat_history
+                } else {
+                    vec![]
+                };
                 let ollama = ollama_rs::Ollama::new(format!("{host}:{port}"), *port);
                 let mut coordinator = Coordinator::new(ollama, model.model.to_string(), history)
                     .options(self.options.clone());
