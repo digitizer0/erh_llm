@@ -162,7 +162,7 @@ impl HistoryTrait for History {
 #[cfg(feature="sqlite_hist")]
         if let Some(x) = &self.sqlite {
             debug!("Reading sqlite history");
-            return Ok(x.read(chatuuid)?);
+            return Ok(x.read(_chatuuid)?);
         }
 
 #[cfg(feature="mysql_hist")]
