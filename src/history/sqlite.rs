@@ -42,11 +42,11 @@ impl SqliteHistory {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS chat_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user TEXT NOT NULL,
+                username TEXT NOT NULL,
                 chatuuid TEXT NOT NULL,
-                message TEXT NOT NULL,
-                timestamp INTEGER NOT NULL,
-                response TEXT
+                user_message TEXT NOT NULL,
+                bot_response TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
             [],
         ).expect("Failed to create table");
@@ -54,6 +54,10 @@ impl SqliteHistory {
         SqliteHistory {
             pool,
         }
+    }
+
+    pub fn get_connection(&self) -> std::result::Result<r2d2::PooledConnection<SqliteConnectionManager>, r2d2::Error> {
+        self.pool.get()
     }
 }
 
@@ -67,15 +71,14 @@ impl HistoryTrait for SqliteHistory {
     /// Returns an error if a connection cannot be obtained from the pool or
     /// if the INSERT statement fails.
     fn store(&mut self, msg: &mut ChatMessage) -> Result<(), Box<dyn std::error::Error>> {
-        let user = &msg.user;
-        let message = &msg.user_message;
-        let timestamp = msg.timestamp;
-        let response = &msg.bot_response;
-        let chatuuid = &msg.chatuuid;
-        let conn = self.pool.get()?;
+        if !msg.validate() {
+            return Err(anyhow::anyhow!("Invalid chat message data").into());
+        }
+        let msg = msg.noemoji();
+        let conn = self.get_connection()?;
         conn.execute(
-            "INSERT INTO chat_history (user chatuuid, message, response, timestamp) VALUES (?1, ?2, ?3, ?4)",
-            params![user, chatuuid, message, response, timestamp],
+            "INSERT INTO chat_history (username, chatuuid, user_message, bot_response) VALUES (?1, ?2, ?3, ?4)",
+            params![msg.user, msg.chatuuid, msg.user_message, msg.bot_response],
         )?;
 
         Ok(())
@@ -91,19 +94,19 @@ impl HistoryTrait for SqliteHistory {
     /// Returns an error if a connection cannot be obtained from the pool,
     /// if statement preparation fails, or if row mapping fails.
     fn read(&self, chatuuid: &str) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
-        let limit = 100; // Default limit for the number of messages to read
-        let conn = self.pool.get()?;
+        let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
-            "SELECT id, user, message, timestamp, response FROM chat_history WHERE chatuuid = '?1' ORDER BY timestamp DESC LIMIT ?2"
+            "SELECT username, user_message, bot_response, chatuuid FROM chat_history WHERE chatuuid = ?1"
         )?;
-        let rows = stmt.query_map(params![limit as i64, chatuuid], |row| {
+        let rows = stmt.query_map(params![chatuuid], |row| {
             Ok(ChatMessage {
-                id: row.get(0)?,
-                user: row.get(1)?,
-                chatuuid: chatuuid.to_string(),
-                user_message: row.get(2)?,
-                timestamp: row.get(3)?,
-                bot_response: row.get(4).unwrap_or_default(),
+                id: None,
+                user: row.get(0)?,
+                user_message: row.get(1)?,
+                bot_response: row.get(2)?,
+                chatuuid: row.get(3)?,
+                timestamp: 0,
+                ollama: None,
             })
         })?;
         let mut messages = Vec::new();
