@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 #ollama-rs = { version = "0.3", features = ["macros", "tool-implementations"] }
 #ollama-rs = { path = "../ollama-rs/ollama-rs", features = ["macros", "tool-implementations"] }
-ollama-rs = { git = "http://gitea.stenbergs.se/Sten/ollama-rs.git", tag = "0.3.52", features = ["macros", "tool-implementations"] }
+ollama-rs = { git = "http://github.com/digitizer0/ollama-rs.git", branch = "sten", features = ["macros", "tool-implementations"] }
 mistralai-client = "0.14"
 log = "0.4"
 anyhow = "1.0"
