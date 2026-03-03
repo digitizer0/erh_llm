@@ -12,12 +12,30 @@ pub struct MsSqlHistory {
 }
 
 impl MsSqlHistory {
+    /// Creates a new [`MsSqlHistory`] from a connection string.
+    ///
+    /// `config` may be either a URI (`mssql://user:pass@host:port/db`) or a
+    /// semicolon-delimited ADO-style connection string
+    /// (`Server=…;Database=…;User Id=…;Password=…`).  The string is stored
+    /// as-is and parsed lazily on first use.
     pub fn new(config: String) -> Self {
         MsSqlHistory {
             config_string: config,
         }
     }
 
+    /// Parses [`Self::config_string`] and builds a [`tiberius::Config`].
+    ///
+    /// Supports two formats:
+    /// - **URI**: `mssql://user:password@host[:port]/database`
+    /// - **ADO connection string**: `Server=…;Database=…;User Id=…;Password=…`
+    ///
+    /// The port is always overridden to `1433` (the default MSSQL port).
+    /// Certificate trust is enabled unconditionally via `trust_cert()`.
+    ///
+    /// # Errors
+    /// Returns an error if the connection string is malformed or if any
+    /// required field (server, database, user, password) is missing.
     fn get_config(&self) -> Result<(MsConfig,String), Box<dyn std::error::Error + Send + Sync>> {
         // Check if it's URI format: "mssql://{user}:{password}@{host}:{port}/{db_name}"
         let cfg=  if self.config_string.starts_with("mssql://") {
@@ -84,6 +102,17 @@ impl MsSqlHistory {
         Ok((config,cfg.0))
     }
 
+    /// Establishes an authenticated [`tiberius::Client`] connection.
+    ///
+    /// The method:
+    /// 1. Calls [`Self::get_config`] to obtain connection parameters.
+    /// 2. Opens a TCP connection with a **10-second timeout**.
+    /// 3. Performs the TLS/login handshake with another **10-second timeout**.
+    /// 4. Creates the `chat_history` table if it does not yet exist.
+    ///
+    /// # Errors
+    /// Returns an error on TCP connection failure, authentication failure,
+    /// connection timeout, or DDL execution failure.
     async fn get_client(&self) -> Result<Client<tokio_util::compat::Compat<TcpStream>>, Box<dyn std::error::Error + Send + Sync>> {
         use tokio_util::compat::TokioAsyncWriteCompatExt;
         let (config, host) = self.get_config()?;
@@ -153,6 +182,17 @@ impl MsSqlHistory {
         Ok(client)
     }
 
+    /// Runs an async future on a **dedicated thread with its own Tokio runtime**.
+    ///
+    /// This avoids the "cannot block inside an async context" panic that would
+    /// occur if `block_on` were called directly inside an existing Tokio
+    /// executor.  A new `std::thread` is spawned, a single-threaded
+    /// `tokio::runtime::Runtime` is created inside it, and `f` is driven to
+    /// completion with `block_on`.
+    ///
+    /// # Errors
+    /// Returns an error if the spawned thread panics or if the future itself
+    /// returns an error.
     fn execute_with_runtime<F, R>(&self, f: F) -> Result<R, Box<dyn std::error::Error + Send + Sync>>
     where
         F: futures::Future<Output = Result<R, Box<dyn std::error::Error + Send + Sync>>> + Send + 'static,
@@ -172,6 +212,15 @@ impl MsSqlHistory {
 }
 
 impl HistoryTrait for MsSqlHistory {
+    /// Validates and inserts a [`ChatMessage`] into the `chat_history` table.
+    ///
+    /// The message is sanitised via [`ChatMessage::noemoji`] before insertion.
+    /// The INSERT runs on a dedicated thread via [`Self::execute_with_runtime`]
+    /// to safely bridge sync and async contexts.
+    ///
+    /// # Errors
+    /// Returns an error if validation fails, if a database connection cannot be
+    /// established, or if the INSERT statement fails.
     fn store(&mut self, msg: &mut ChatMessage) -> std::result::Result<(), Box<dyn std::error::Error>> {
         if !msg.validate() {
             return Err(anyhow::anyhow!("Invalid chat message data").into());
@@ -196,6 +245,15 @@ impl HistoryTrait for MsSqlHistory {
         })
     }
 
+    /// Retrieves all [`ChatMessage`]s for the given `chatuuid` from MSSQL.
+    ///
+    /// Results are ordered by `timestamp ASC`.  The query runs on a dedicated
+    /// thread via [`Self::execute_with_runtime`] to safely bridge sync and
+    /// async contexts.
+    ///
+    /// # Errors
+    /// Returns an error if a database connection cannot be established or if
+    /// the SELECT query fails.
     fn read(&self, chatuuid: &str) -> std::result::Result<Vec<crate::ChatMessage>, Box<dyn std::error::Error>> {
         let config_string = self.config_string.clone();
         let chatuuid = chatuuid.to_string();

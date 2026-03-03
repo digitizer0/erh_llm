@@ -19,7 +19,23 @@ mod mssql;
 use crate::history::mssql::MsSqlHistory;
 
 pub(crate) trait HistoryTrait {
+    /// Persists a [`ChatMessage`] to the backing history store.
+    ///
+    /// Implementations are expected to assign any backend-generated fields
+    /// (e.g. a primary-key `id`) back onto `msg` before returning.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying database operation fails or if
+    /// `msg` fails validation.
     fn store(&mut self, msg: &mut ChatMessage) -> Result<(), Box<dyn std::error::Error>>;
+
+    /// Retrieves all [`ChatMessage`]s associated with the given `chatuuid`.
+    ///
+    /// Messages are returned in the order defined by the backend
+    /// (typically ascending by timestamp).
+    ///
+    /// # Errors
+    /// Returns an error if the underlying database query fails.
     fn read(&self, chatuuid: &str) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>>;
 }
 
@@ -48,6 +64,16 @@ pub(crate)  struct History {
 }
 
 impl History {
+    /// Creates a new [`History`] instance configured by `cfg`.
+    ///
+    /// The appropriate backend (SQLite, MySQL, or MSSQL) is initialised
+    /// based on the variant of [`HistoryConfig`] supplied.  All other
+    /// backend fields are set to `None`.
+    ///
+    /// # Panics
+    /// Panics if `cfg` is [`HistoryConfig::None`] or
+    /// [`HistoryConfig::Unknown`], as those variants carry no connection
+    /// information.
     pub(crate) fn new(cfg: HistoryConfig) -> Self {
         match cfg {
             HistoryConfig::Sqlite(db) => {
@@ -91,6 +117,15 @@ impl History {
 }
 
 impl HistoryTrait for History {
+    /// Delegates to the active backend's [`HistoryTrait::store`] implementation.
+    ///
+    /// Iterates through each conditionally-compiled backend in priority order
+    /// (SQLite → MySQL → MSSQL) and forwards the call to the first one that
+    /// is present.
+    ///
+    /// # Errors
+    /// Returns `"No history backend configured"` if no backend is enabled at
+    /// compile time, or propagates the backend-specific error otherwise.
     fn store(&mut self, msg: &mut ChatMessage) -> Result<(), Box<dyn std::error::Error>> {
         debug!("Storing message in history: {msg:?}");
 
@@ -115,6 +150,14 @@ impl HistoryTrait for History {
         Err("No history backend configured".into())
     }
 
+    /// Delegates to the active backend's [`HistoryTrait::read`] implementation.
+    ///
+    /// Iterates through each conditionally-compiled backend in priority order
+    /// (SQLite → MySQL → MSSQL) and forwards the call to the first one that
+    /// is present.  Returns an empty vector when no backend is compiled in.
+    ///
+    /// # Errors
+    /// Propagates any error returned by the active backend.
     fn read(&self, _chatuuid: &str) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
 #[cfg(feature="sqlite_hist")]
         if let Some(x) = &self.sqlite {

@@ -21,6 +21,17 @@ impl SqliteHistory {
         Ok(())
     }
 
+    /// Creates a new [`SqliteHistory`] backed by the SQLite file at `database`.
+    ///
+    /// This method:
+    /// 1. Calls [`Self::ensure_db_file_exists`] to create the file if absent.
+    /// 2. Builds an r2d2 connection pool over the file.
+    /// 3. Executes `CREATE TABLE IF NOT EXISTS chat_history …` to initialise
+    ///    the schema.
+    ///
+    /// # Panics
+    /// Panics if the database file cannot be created, if the pool cannot be
+    /// built, or if the schema initialisation query fails.
     pub fn new(database: String) -> Self {
         debug!("Initializing SqliteHistory with database: {database}");
         Self::ensure_db_file_exists(&database).expect("Failed to ensure db file exists");
@@ -47,6 +58,14 @@ impl SqliteHistory {
 }
 
 impl HistoryTrait for SqliteHistory {
+    /// Inserts a [`ChatMessage`] into the `chat_history` table.
+    ///
+    /// All fields of `msg` (`user`, `chatuuid`, `user_message`, `bot_response`,
+    /// `timestamp`) are written via a parameterised INSERT statement.
+    ///
+    /// # Errors
+    /// Returns an error if a connection cannot be obtained from the pool or
+    /// if the INSERT statement fails.
     fn store(&mut self, msg: &mut ChatMessage) -> Result<(), Box<dyn std::error::Error>> {
         let user = &msg.user;
         let message = &msg.user_message;
@@ -62,6 +81,15 @@ impl HistoryTrait for SqliteHistory {
         Ok(())
     }
 
+    /// Retrieves up to 100 [`ChatMessage`]s for the given `chatuuid`.
+    ///
+    /// Rows are ordered by `timestamp DESC` and mapped from the raw SQLite
+    /// columns (`id`, `user`, `message`, `timestamp`, `response`) into
+    /// [`ChatMessage`] structs.
+    ///
+    /// # Errors
+    /// Returns an error if a connection cannot be obtained from the pool,
+    /// if statement preparation fails, or if row mapping fails.
     fn read(&self, chatuuid: &str) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
         let limit = 100; // Default limit for the number of messages to read
         let conn = self.pool.get()?;
