@@ -5,8 +5,11 @@
 //! optional tool/component registries, and query classification.
 
 mod history;
+mod composer;
 #[cfg(feature="tools")]
 mod components;
+
+pub use composer::{ComposedPrompt, PromptComposer};
 
 pub use history::HistoryConfig;
 use mistralai_client::v1::{chat::{ChatMessage as MistralChatMessage, ChatParams}, client::Client as MistralClient, constants::Model};
@@ -283,21 +286,19 @@ impl Query {
         debug!("Running query with message: {}", self.setup.prompt);
         debug!("ComponentRegistry: {:?}", self.components.as_ref().map(|c| c.components.len()));
 
-        let context = if !self.context.is_empty() {
-            format!("CONTEXT: {}\n\n", self.context)
-        } else {
-            String::new()
-        };
-
         let qsetup = self.setup.clone();
 
-        let message = format!("USER QUERY: {}\n\n", qsetup.prompt);
+        let composed = PromptComposer::new()
+            .context(self.context.clone())
+            .constraint(qsetup.constraint.as_deref().unwrap_or(""))
+            .style(qsetup.style.as_deref().unwrap_or(""))
+            .build(&qsetup.prompt);
 
-        let constraint = format!("CONSTRAINT: {}\n\n",qsetup.constraint.as_deref().unwrap_or(""));
+        debug!("System prompt: {}", composed.system);
 
-        let style = qsetup.style.as_deref().unwrap_or("");
-        let p = format!("{constraint}{context}{message}STYLE: {style}\n\n");
-        let x = self.send(p).await.unwrap_or_default();
+        // Send the system prompt as a dedicated system turn so Ollama keeps
+        // context, constraints and style clearly separated from the user query.
+        let x = self.send_with_system(composed.system, composed.user).await.unwrap_or_default();
         log::debug!("Query result: {x:?}");
         Ok(x)
     }
@@ -368,10 +369,99 @@ impl Query {
         }
     }
 
+    /// Sends a system message and a user query to the LLM as separate role turns,
+    /// then persists the exchange to history.
+    ///
+    /// This is the preferred path from [`Query::execute`]: the system message carries
+    /// role, context, constraints and style; the user message contains only the raw
+    /// query. Keeping them separate lets Ollama (and most instruction-tuned models)
+    /// apply the system instructions without confusing them with conversational
+    /// history.
+    ///
+    /// # Errors
+    /// Returns an error if the LLM request or history storage fails.
+    pub async fn send_with_system(&mut self, system: String, user_query: String) -> Result<String, Box<dyn std::error::Error>> {
+        let resp = self.send_raw_with_system(system, user_query).await?;
+        let mut msg = ChatMessage {
+            id: None,
+            user: self.setup.user.clone(),
+            user_message: self.setup.prompt.clone(),
+            bot_response: resp.clone(),
+            timestamp: 0,
+            chatuuid: self.setup.chatuuid.clone(),
+            ..Default::default()
+        };
+        debug!("Storing message in history: {msg:?}");
+        let x = if let Some(history) = &mut self.history {
+            history.store(&mut msg)
+        } else {
+            Ok(())
+        };
+        if let Err(e) = x {
+            warn!("Error storing message in history: {e}");
+            Err(e)
+        } else {
+            Ok(resp)
+        }
+    }
+
+    /// Like [`Query::send_raw`] but prepends a `system` role message before the
+    /// user turn. History is **not** written by this method.
+    async fn send_raw_with_system(&self, system: String, user_query: String) -> Result<String, Box<dyn std::error::Error>> {
+        let resp = match &self.connection {
+            LLM::Ollama(host, port, model) => {
+                let history = if let Some(history) = &self.history {
+                    let msgs = history.read(&self.setup.chatuuid)?;
+                    let mut chat_history = vec![];
+                    for msg in msgs {
+                        let user_cm = chat::ChatMessage::new(chat::MessageRole::User, msg.user_message.clone());
+                        chat_history.push(user_cm);
+                        let bot_cm = chat::ChatMessage::new(chat::MessageRole::Assistant, msg.bot_response.clone());
+                        chat_history.push(bot_cm);
+                    }
+                    chat_history
+                } else {
+                    vec![]
+                };
+
+                let ollama = ollama_rs::Ollama::new(format!("{host}:{port}"), *port);
+                let mut coordinator = Coordinator::new(ollama, model.model.to_string(), history)
+                    .options(self.options.clone());
+
+                #[cfg(feature = "tools")]
+                if model.tool.unwrap_or(false) {
+                    if let Some(components) = &self.components {
+                        debug!("Adding components/tools to Ollama coordinator");
+                        coordinator = components.clone().add_tools(coordinator);
+                    }
+                }
+
+                let messages = vec![
+                    chat::ChatMessage::new(chat::MessageRole::System, system),
+                    chat::ChatMessage::new(chat::MessageRole::User, user_query),
+                ];
+
+                debug!("Sending composed prompt to Ollama");
+                let resp = coordinator.chat(messages).await;
+                match resp {
+                    Ok(response) => response.message.content,
+                    Err(e) => {
+                        debug!("Error communicating with Ollama: {e:?}");
+                        return Err(Box::new(e));
+                    }
+                }
+            }
+            // For non-Ollama backends fall back to a single concatenated prompt.
+            _ => {
+                let fallback = format!("{system}\n\n{user_query}");
+                self.send_raw(UserPrompt::Default(fallback)).await?
+            }
+        };
+        debug!("Received response: {resp}");
+        Ok(resp)
+    }
 
 
-    /// Sends a [`UserPrompt`] directly to the configured LLM backend without
-    /// writing anything to history.
     ///
     /// Chat history is read from the persistence layer and injected into the
     /// request (Ollama coordinator) so the model retains conversational context,
