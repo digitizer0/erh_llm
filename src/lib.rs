@@ -215,11 +215,10 @@ impl Query {
     /// the Ollama request fails.
     pub async fn embed(config:(String,u16,ModelConfig),chunk:String) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
         let (url, port, model) = config;
-        let ollama = ollama_rs::Ollama::new(format!("{url}:{port}"), port);
+        let ollama = ollama_rs::Ollama::new(url.as_str(), port);
         let e = EmbeddingsInput::Single(chunk);
-        let options = ModelOptions::default();
-        options.num_ctx(model.context_size.unwrap_or(2048) as u64);
-        let x  = ollama.generate_embeddings(request::GenerateEmbeddingsRequest::new(model.model.clone(), e)).await;
+        let options = ModelOptions::default().num_ctx(model.context_size.unwrap_or(2048) as u64);
+        let x  = ollama.generate_embeddings(request::GenerateEmbeddingsRequest::new(model.model.clone(), e).options(options)).await;
         let y = match x {
             Ok(response) => response,
             Err(e) => {
@@ -424,9 +423,14 @@ impl Query {
                     vec![]
                 };
 
-                let ollama = ollama_rs::Ollama::new(format!("{host}:{port}"), *port);
+                let ollama = ollama_rs::Ollama::new(host.as_str(), *port);
+                let options = if let Some(ctx) = model.context_size {
+                    self.options.clone().num_ctx(ctx as u64)
+                } else {
+                    self.options.clone()
+                }.num_predict(-1);
                 let mut coordinator = Coordinator::new(ollama, model.model.to_string(), history)
-                    .options(self.options.clone());
+                    .options(options);
 
                 #[cfg(feature = "tools")]
                 if model.tool.unwrap_or(false) {
@@ -494,9 +498,14 @@ impl Query {
                 } else {
                     vec![]
                 };
-                let ollama = ollama_rs::Ollama::new(format!("{host}:{port}"), *port);
+                let ollama = ollama_rs::Ollama::new(host.as_str(), *port);
+                let options = if let Some(ctx) = model.context_size {
+                    self.options.clone().num_ctx(ctx as u64)
+                } else {
+                    self.options.clone()
+                }.num_predict(-1);
                 let mut coordinator = Coordinator::new(ollama, model.model.to_string(), history)
-                    .options(self.options.clone());
+                    .options(options);
 
                 let cm = chat::ChatMessage::new(chat::MessageRole::User, text);
 
