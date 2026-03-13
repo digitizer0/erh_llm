@@ -5,6 +5,7 @@ pub (crate) mod tools;
 
 use ollama_rs::coordinator::Coordinator;
 use ollama_rs::history::ChatHistory;
+use schemars::Schema;
 
 use crate::components::prompt::Prompt;
 use crate::components::resource::Resource;
@@ -94,15 +95,35 @@ impl ComponentRegistry {
     pub fn add_tools<T: ChatHistory>(&mut self, coordinator : Coordinator<T>) -> Coordinator<T> {
         let mut cd = coordinator;
         log::debug!("Adding tools from ComponentRegistry with {} components", self.components.len());
+        // Build a reusable schema for tools that accept a single string parameter.
+        // Schema::default() serialises as `{}` which Ollama cannot parse; we need
+        // a proper JSON-Schema object with type+properties so Ollama accepts the
+        // tool definition and knows how to call it.
+        let single_string_schema = Schema::from(
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "param": {
+                        "type": "string",
+                        "description": "The input parameter for this tool."
+                    }
+                },
+                "required": ["param"]
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default()
+        );
+
         for component in &self.components {
             for tool in &component.tools {
                 log::debug!("Adding tool: {}", tool.name);
-                cd = cd.add_tool_custom(tool.name.as_str(), tool.description.as_str(), Box::new(tool.clone()));
+                cd = cd.add_tool_custom_schema(tool.name.as_str(), tool.description.as_str(), single_string_schema.clone(), Box::new(tool.clone()));
 
             }
             for resource in &component.resources {
                 log::debug!("Adding resource: {}", resource.name);
-                cd = cd.add_tool_custom(resource.name.as_str(), resource.description.as_str(), Box::new(resource.clone()));
+                cd = cd.add_tool_custom_schema(resource.name.as_str(), resource.description.as_str(), single_string_schema.clone(), Box::new(resource.clone()));
 
             }
         };

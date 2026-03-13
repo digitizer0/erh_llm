@@ -80,10 +80,23 @@ impl ToolHolder for Tool {
         parameters: serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = Result<String, Box<dyn std::error::Error + Send + Sync>>> + '_ + Send + Sync>> {
         Box::pin(async move {
-            // Convert JSON parameters to String for tool execution
-            let param_str = serde_json::to_string(&parameters)?;
+            // Extract the first string value from the JSON object, or fall back to
+            // serialising the whole value. This handles models that wrap the single
+            // string parameter in an object with an arbitrary key name, e.g.
+            // {"query": "…"}, {"whereclause": "…"}, {"param": "…"}, etc.
+            log::debug!("Tool '{}' called with parameters: {}", self.name, parameters);
+            let param_str = match &parameters {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Object(map) => {
+                    // Pick the first string value; fall back to serialising the object.
+                    map.values()
+                        .find_map(|v| v.as_str().map(str::to_string))
+                        .unwrap_or_else(|| serde_json::to_string(&parameters).unwrap_or_default())
+                }
+                _ => serde_json::to_string(&parameters).unwrap_or_default(),
+            };
 
-            // Execute the tool with the deserialized parameter
+            // Execute the tool with the extracted parameter
             let result = self.execute(&param_str).await;
 
             // Return the result or a failure error
