@@ -17,8 +17,11 @@ This library works natively with llama.cpp (no Ollama required), making it a lig
 | `tools`     | ✅       | Enable tool / function calling support |
 | `reasoning` | ✅       | Enable Qwen3 thinking-token support (`<think>…</think>`) |
 | `native`    | ❌       | Link against the native llama.cpp library |
+| `cuda`      | ❌       | Enable NVIDIA CUDA GPU acceleration (implies `native`) |
 
 The `native` feature requires llama.cpp to be installed on your system (see [Prerequisites](#prerequisites)).
+
+The `cuda` feature additionally requires the CUDA toolkit and a CUDA-enabled build of llama.cpp.
 
 ---
 
@@ -32,6 +35,11 @@ To use the `native` feature you need:
    ```
 2. llama.cpp installed and its shared library (`libllama`) visible on your `LD_LIBRARY_PATH`/`LIBRARY_PATH`.
 
+To use the `cuda` feature you additionally need:
+
+3. The [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) installed (nvcc and the CUDA runtime libraries).
+4. A CUDA-enabled build of llama.cpp (compile with `cmake -DGGML_CUDA=ON …`).
+
 ---
 
 ## Usage
@@ -40,8 +48,9 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-qwen-rs = { path = "qwen-rs" }                    # without native inference
-# qwen-rs = { path = "qwen-rs", features = ["native"] }  # with native inference
+qwen-rs = { path = "qwen-rs" }                           # without native inference
+# qwen-rs = { path = "qwen-rs", features = ["native"] }  # with CPU-only native inference
+# qwen-rs = { path = "qwen-rs", features = ["cuda"] }    # with NVIDIA CUDA GPU acceleration
 ```
 
 ### Text-only chat
