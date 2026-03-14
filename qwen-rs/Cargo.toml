@@ -22,7 +22,9 @@ llama-cpp-2 = { version = "0.1", optional = true }
 # tools: enable tool/function calling support
 # reasoning: enable Qwen3 thinking/reasoning mode (/think)
 # native: compile with actual llama.cpp bindings (requires native library)
+# cuda: enable NVIDIA CUDA GPU acceleration (requires CUDA toolkit and implies native)
 default = ["tools", "reasoning"]
 tools = []
 reasoning = []
 native = ["llama-cpp-2"]
+cuda = ["native", "llama-cpp-2/cuda"]
