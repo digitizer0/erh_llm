@@ -37,6 +37,13 @@ pub(crate) trait HistoryTrait {
     /// # Errors
     /// Returns an error if the underlying database query fails.
     fn read(&self, chatuuid: &str) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>>;
+
+    /// Sets the feedback value for a specific message row identified by
+    /// `message_id`.  `feedback` must be `"U"` (thumbs-up) or `"D"` (thumbs-down).
+    ///
+    /// # Errors
+    /// Returns an error if the underlying database update fails.
+    fn set_feedback(&mut self, message_id: i64, feedback: &str) -> Result<(), Box<dyn std::error::Error>>;
 }
 
 #[derive(Debug, Default,Clone, PartialEq, Eq)]
@@ -179,6 +186,16 @@ impl HistoryTrait for History {
 
         debug!("No history backend configured, returning empty vector.");
         Ok(vec![])
+    }
+
+    fn set_feedback(&mut self, message_id: i64, feedback: &str) -> Result<(), Box<dyn std::error::Error>> {
+#[cfg(feature="mssql_hist")]
+        if let Some(x) = &mut self.mssql {
+            debug!("Setting feedback via mssql history");
+            return x.set_feedback(message_id, feedback);
+        }
+        let _ = (message_id, feedback);
+        Err("No history backend configured".into())
     }
     
 }

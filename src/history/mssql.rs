@@ -169,7 +169,8 @@ impl MsSqlHistory {
                 chatuuid NVARCHAR(40) NOT NULL,
                 user_message NTEXT NOT NULL,
                 bot_response NTEXT NOT NULL,
-                timestamp DATETIME DEFAULT GETDATE()
+                timestamp DATETIME DEFAULT GETDATE(),
+                feedback NVARCHAR(1) NULL
             )
         "#;
 
@@ -225,24 +226,36 @@ impl HistoryTrait for MsSqlHistory {
         if !msg.validate() {
             return Err(anyhow::anyhow!("Invalid chat message data").into());
         }
-        let msg = msg.noemoji();
+        let clean = msg.noemoji();
         let config_string = self.config_string.clone();
-        
-        self.execute_with_runtime(async move {
+
+        let inserted_id: i64 = self.execute_with_runtime(async move {
             let history = MsSqlHistory::new(config_string);
             let mut client = history.get_client().await?;
-            
-            let insert_sql = "INSERT INTO chat_history (username, chatuuid, user_message, bot_response) VALUES (@P1, @P2, @P3, @P4)";
-            
-            client.execute(
+
+            let insert_sql = "INSERT INTO chat_history (username, chatuuid, user_message, bot_response) OUTPUT INSERTED.id VALUES (@P1, @P2, @P3, @P4)";
+
+            let mut stream = client.query(
                 insert_sql,
-                &[&msg.user, &msg.chatuuid, &msg.user_message, &msg.bot_response],
+                &[&clean.user, &clean.chatuuid, &clean.user_message, &clean.bot_response],
             ).await?;
-            
-            Ok(())
-        }).map_err(|e| -> Box<dyn std::error::Error> { 
+
+            let mut inserted_id: i64 = 0;
+            while let Some(item) = stream.try_next().await? {
+                if let tiberius::QueryItem::Row(row) = item {
+                    if let Some(id) = row.get::<i64, _>(0) {
+                        inserted_id = id;
+                    }
+                }
+            }
+
+            Ok(inserted_id)
+        }).map_err(|e| -> Box<dyn std::error::Error> {
             Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("MSSQL store error: {}", e)))
-        })
+        })?;
+
+        msg.id = Some(inserted_id);
+        Ok(())
     }
 
     /// Retrieves all [`ChatMessage`]s for the given `chatuuid` from MSSQL.
@@ -254,6 +267,25 @@ impl HistoryTrait for MsSqlHistory {
     /// # Errors
     /// Returns an error if a database connection cannot be established or if
     /// the SELECT query fails.
+    fn set_feedback(&mut self, message_id: i64, feedback: &str) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Validate feedback value
+        if feedback != "U" && feedback != "D" {
+            return Err(format!("Invalid feedback value '{}': must be 'U' or 'D'", feedback).into());
+        }
+        let config_string = self.config_string.clone();
+        let feedback = feedback.to_string();
+
+        self.execute_with_runtime(async move {
+            let history = MsSqlHistory::new(config_string);
+            let mut client = history.get_client().await?;
+            let sql = "UPDATE chat_history SET feedback = @P1 WHERE id = @P2";
+            client.execute(sql, &[&feedback.as_str(), &message_id]).await?;
+            Ok(())
+        }).map_err(|e| -> Box<dyn std::error::Error> {
+            Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("MSSQL set_feedback error: {}", e)))
+        })
+    }
+
     fn read(&self, chatuuid: &str) -> std::result::Result<Vec<crate::ChatMessage>, Box<dyn std::error::Error>> {
         let config_string = self.config_string.clone();
         let chatuuid = chatuuid.to_string();

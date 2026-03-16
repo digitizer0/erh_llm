@@ -58,7 +58,7 @@ pub struct ChatMessage {
     /// The underlying Ollama chat message, if this message originated from Ollama.
     pub ollama: Option<chat::ChatMessage>,
     /// Optional database row ID assigned after persistence.
-    pub id: Option<i32>,
+    pub id: Option<i64>,
     /// Username or identifier of the human participant.
     pub user: String,
     /// The message sent by the user.
@@ -199,6 +199,11 @@ pub struct Query {
     /// Optional component/tool registry (only available with the `tools` feature).
     #[cfg(feature="tools")]
     pub components: Option<ComponentRegistry>,
+    /// The database row ID of the last message stored in history.
+    /// Populated after a successful [`Query::execute`], [`Query::send`], or
+    /// [`Query::send_with_system`] call.  `None` if history is disabled or the
+    /// backend did not return an ID.
+    pub last_message_id: Option<i64>,
 }
 
 impl Query {
@@ -240,6 +245,17 @@ impl Query {
         let h = History::new(history);
         let msgs = h.read(uuid)?;
         Ok(msgs)
+    }
+
+    /// Sets the feedback value (`"U"` for thumbs-up, `"D"` for thumbs-down) on the
+    /// `chat_history` row identified by `message_id`.
+    ///
+    /// # Errors
+    /// Returns an error if the history backend is not configured or if the
+    /// database update fails.
+    pub async fn set_chat_feedback(message_id: i64, feedback: &str, history: HistoryConfig) -> Result<(), Box<dyn std::error::Error>> {
+        let mut h = History::new(history);
+        h.set_feedback(message_id, feedback)
     }
 }
 
@@ -364,6 +380,7 @@ impl Query {
             warn!("Error storing message in history: {e}");
             Err(e)
         } else {
+            self.last_message_id = msg.id;
             Ok(resp)
         }
     }
@@ -400,6 +417,7 @@ impl Query {
             warn!("Error storing message in history: {e}");
             Err(e)
         } else {
+            self.last_message_id = msg.id;
             Ok(resp)
         }
     }
