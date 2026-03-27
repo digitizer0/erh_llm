@@ -435,7 +435,8 @@ impl Query {
             LLM::Anthropic(api_key, model) => {
                 let history = self.read_history()?;
                 anthropic::anthropic_chat_with_system(
-                    api_key, model, history, system, user_query
+                    api_key, model, history, system, user_query,
+                    #[cfg(feature = "tools")] self.components.as_ref(),
                 ).await?
             }
             // For other backends fall back to a single concatenated prompt.
@@ -477,7 +478,10 @@ impl Query {
 
             LLM::Anthropic(api_key, model) => {
                 let history = self.read_history()?;
-                anthropic::anthropic_chat(api_key, model, history, text).await?
+                anthropic::anthropic_chat(
+                    api_key, model, history, text,
+                    #[cfg(feature = "tools")] self.components.as_ref(),
+                ).await?
             }
             // Add other LLMs here as needed
             _ => return Err(ErhLlmError::ConfigError("LLM backend not supported".into())),
