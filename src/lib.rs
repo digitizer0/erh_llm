@@ -6,19 +6,19 @@
 
 mod history;
 mod composer;
+mod ollama;
+mod mistral;
 #[cfg(feature="tools")]
 mod components;
 
 pub use composer::{ComposedPrompt, PromptComposer};
 
 pub use history::HistoryConfig;
-use mistralai_client::v1::{chat::{ChatMessage as MistralChatMessage, ChatParams}, client::Client as MistralClient, constants::Model};
 use serde::{Deserialize, Serialize};
 
 use crate::history::HistoryTrait;
 
 use log::{debug, warn};
-use ollama_rs::{coordinator::Coordinator, generation::{chat, embeddings::request::{self, EmbeddingsInput}}};
 pub use ollama_rs::models::ModelOptions;
 
 use crate::history::History;
@@ -56,7 +56,7 @@ impl ModelConfig {
 #[derive(Debug,Clone,Default)]
 pub struct ChatMessage {
     /// The underlying Ollama chat message, if this message originated from Ollama.
-    pub ollama: Option<chat::ChatMessage>,
+    pub ollama: Option<ollama_rs::generation::chat::ChatMessage>,
     /// Optional database row ID assigned after persistence.
     pub id: Option<i64>,
     /// Username or identifier of the human participant.
@@ -220,20 +220,7 @@ impl Query {
     /// the Ollama request fails.
     pub async fn embed(config:(String,u16,ModelConfig),chunk:String) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
         let (url, port, model) = config;
-        let ollama = ollama_rs::Ollama::new(url.as_str(), port);
-        let e = EmbeddingsInput::Single(chunk);
-        let options = ModelOptions::default().num_ctx(model.context_size.unwrap_or(2048) as u64);
-        let x  = ollama.generate_embeddings(request::GenerateEmbeddingsRequest::new(model.model.clone(), e).options(options)).await;
-        let y = match x {
-            Ok(response) => response,
-            Err(e) => {
-                debug!("Error generating embeddings: {e:?}");
-                return Ok(vec![]); // Return an empty vector on error
-            }
-        };
-        //println!("Embeddings: {:?}", y);
-        debug!("VectorCount: {:?}", y.embeddings[0].len());
-        Ok(y.embeddings[0].clone())
+        ollama::ollama_embed(&url, port, &model, chunk).await
     }
 
     /// Retrieves all stored [`ChatMessage`]s for the given session UUID from the
@@ -422,56 +409,28 @@ impl Query {
         }
     }
 
+    /// Reads the chat history for the current session from the persistence layer.
+    ///
+    /// Returns an empty vec when no history backend is configured.
+    fn read_history(&self) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
+        if let Some(history) = &self.history {
+            Ok(history.read(&self.setup.chatuuid)?)
+        } else {
+            Ok(vec![])
+        }
+    }
+
     /// Like [`Query::send_raw`] but prepends a `system` role message before the
     /// user turn. History is **not** written by this method.
     async fn send_raw_with_system(&self, system: String, user_query: String) -> Result<String, Box<dyn std::error::Error>> {
         let resp = match &self.connection {
             LLM::Ollama(host, port, model) => {
-                let history = if let Some(history) = &self.history {
-                    let msgs = history.read(&self.setup.chatuuid)?;
-                    let mut chat_history = vec![];
-                    for msg in msgs {
-                        let user_cm = chat::ChatMessage::new(chat::MessageRole::User, msg.user_message.clone());
-                        chat_history.push(user_cm);
-                        let bot_cm = chat::ChatMessage::new(chat::MessageRole::Assistant, msg.bot_response.clone());
-                        chat_history.push(bot_cm);
-                    }
-                    chat_history
-                } else {
-                    vec![]
-                };
-
-                let ollama = ollama_rs::Ollama::new(host.as_str(), *port);
-                let options = if let Some(ctx) = model.context_size {
-                    self.options.clone().num_ctx(ctx as u64)
-                } else {
-                    self.options.clone()
-                }.num_predict(-1);
-                let mut coordinator = Coordinator::new(ollama, model.model.to_string(), history)
-                    .options(options);
-
-                #[cfg(feature = "tools")]
-                if model.tool.unwrap_or(false) {
-                    if let Some(components) = &self.components {
-                        debug!("Adding components/tools to Ollama coordinator");
-                        coordinator = components.clone().add_tools(coordinator);
-                    }
-                }
-
-                let messages = vec![
-                    chat::ChatMessage::new(chat::MessageRole::System, system),
-                    chat::ChatMessage::new(chat::MessageRole::User, user_query),
-                ];
-
-                debug!("Sending composed prompt to Ollama");
-                let resp = coordinator.chat(messages).await;
-                match resp {
-                    Ok(response) => response.message.content,
-                    Err(e) => {
-                        debug!("Error communicating with Ollama: {e:?}");
-                        return Err(Box::new(e));
-                    }
-                }
+                let history = self.read_history()?;
+                ollama::ollama_chat_with_system(
+                    host, *port, model, history, self.options.clone(),
+                    system, user_query,
+                    #[cfg(feature = "tools")] self.components.as_ref(),
+                ).await?
             }
             // For non-Ollama backends fall back to a single concatenated prompt.
             _ => {
@@ -493,90 +452,21 @@ impl Query {
     /// # Errors
     /// Returns an error if the underlying LLM client reports a failure.
     pub async fn send_raw(&self, prompt: UserPrompt) -> Result<String, Box<dyn std::error::Error>> {
-        let (text,_model) = match prompt {
-            UserPrompt::Default(p) => (p,ModelConfig::default()),
-            UserPrompt::Model(model, p) => {
-                (p, model)
-            }
+        let (text, _model) = match prompt {
+            UserPrompt::Default(p) => (p, ModelConfig::default()),
+            UserPrompt::Model(model, p) => (p, model),
         };
-        //debug!("Sending prompt!!: {text}");
         let resp = match &self.connection {
             LLM::Ollama(host, port, model) => {
-                //load local chat history into ollama coordinator
-                let history = if let Some(history) = &self.history {
-                    let msgs = history.read(&self.setup.chatuuid)?;
-                    let mut chat_history = vec![];
-                    for msg in msgs {
-                        let user_cm = chat::ChatMessage::new(chat::MessageRole::User, msg.user_message.clone());
-                        chat_history.push(user_cm);
-                        let bot_cm = chat::ChatMessage::new(chat::MessageRole::Assistant, msg.bot_response.clone());
-                        chat_history.push(bot_cm);
-                    }
-                    chat_history
-                } else {
-                    vec![]
-                };
-                let ollama = ollama_rs::Ollama::new(host.as_str(), *port);
-                let options = if let Some(ctx) = model.context_size {
-                    self.options.clone().num_ctx(ctx as u64)
-                } else {
-                    self.options.clone()
-                }.num_predict(-1);
-                let mut coordinator = Coordinator::new(ollama, model.model.to_string(), history)
-                    .options(options);
-
-                let cm = chat::ChatMessage::new(chat::MessageRole::User, text);
-
-                #[cfg(feature="tools")]
-                if model.tool.unwrap_or(false){
-                    if let Some(components) = &self.components {
-                        debug!("Adding components/tools to Ollama coordinator");
-                        coordinator = components.clone().add_tools(coordinator);
-                    }
-                }
-                
-                debug!("Sending prompt to Ollama: {:?}", cm);
-                let resp = coordinator.chat(vec![cm]).await;
-                match resp {
-                    Ok(response) => response.message.content,
-                    Err(e) => {
-                        debug!("Error communicating with Ollama: {e:?}");
-                        return Err(Box::new(e));
-                    }
-                }
+                let history = self.read_history()?;
+                ollama::ollama_chat(
+                    host, *port, model, history, self.options.clone(), text,
+                    #[cfg(feature = "tools")] self.components.as_ref(),
+                ).await?
             }
             LLM::MistralAI(apikey) => {
-                let client = MistralClient::new(Some(apikey.clone()), None, None, None).unwrap();
-                let model = Model::MistralMediumLatest;
-                let messages = vec![
-                    MistralChatMessage {
-                        role:mistralai_client::v1::chat::ChatMessageRole::User,
-                        content:text.clone(),
-                        tool_calls: None, }
-                ];
-                let options = Some(ChatParams {
-                    ..Default::default()
-                });
-
-                /* TODO: Add tool support for MistralAI                 
-                #[cfg(feature = "tools")]
-                {
-                    match &self.components {
-                        Some(comp) => {
-                            use mistralai_client::v1::{client, tool::{self, Tool}};
-
-                            debug!("Using tools/components in query");
-                            options
-                        },
-                        None =>  {
-                            debug!("No tools/components in query");
-                        }
-                    }
-                } */
-
-                debug!("Sending prompt to MistralAI: {text}");
-                let response = client.chat(model, messages, options)?;
-                response.object
+                // TODO: Add tool support for MistralAI
+                mistral::mistral_chat(apikey, text)?
             }
             // Add other LLMs here as needed
             _ => panic!("Not possible"),
