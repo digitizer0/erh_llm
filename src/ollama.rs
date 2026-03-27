@@ -14,6 +14,7 @@ use ollama_rs::{
 };
 pub use ollama_rs::models::ModelOptions;
 
+use crate::errors::{ErhLlmError, Result};
 use crate::{ModelConfig, ChatMessage as ErhChatMessage};
 #[cfg(feature = "tools")]
 use crate::ComponentRegistry;
@@ -26,7 +27,7 @@ pub async fn ollama_embed(
     port: u16,
     model: &ModelConfig,
     chunk: String,
-) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+) -> Result<Vec<f32>> {
     let ollama = ollama_rs::Ollama::new(host, port);
     let input = EmbeddingsInput::Single(chunk);
     let options =
@@ -45,7 +46,7 @@ pub async fn ollama_embed(
         }
         Err(e) => {
             debug!("Error generating embeddings: {e:?}");
-            Ok(vec![])
+            Err(ErhLlmError::EmbeddingError(e.to_string()))
         }
     }
 }
@@ -62,7 +63,7 @@ pub async fn ollama_chat(
     base_options: ModelOptions,
     user_text: String,
     #[cfg(feature = "tools")] components: Option<&ComponentRegistry>,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<String> {
     let ollama = ollama_rs::Ollama::new(host, port);
     let options = build_options(base_options, model);
     let chat_history = build_chat_history(history);
@@ -89,7 +90,7 @@ pub async fn ollama_chat(
         }
         Err(e) => {
             debug!("Error communicating with Ollama: {e:?}");
-            Err(Box::new(e))
+            Err(ErhLlmError::OllamaError(e.to_string()))
         }
     }
 }
@@ -107,7 +108,7 @@ pub async fn ollama_chat_with_system(
     system: String,
     user_query: String,
     #[cfg(feature = "tools")] components: Option<&ComponentRegistry>,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<String> {
     let ollama = ollama_rs::Ollama::new(host, port);
     let options = build_options(base_options, model);
     let chat_history = build_chat_history(history);
@@ -137,7 +138,7 @@ pub async fn ollama_chat_with_system(
         }
         Err(e) => {
             debug!("Error communicating with Ollama: {e:?}");
-            Err(Box::new(e))
+            Err(ErhLlmError::OllamaError(e.to_string()))
         }
     }
 }

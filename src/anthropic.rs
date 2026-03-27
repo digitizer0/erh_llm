@@ -10,6 +10,7 @@ use anthropic_rust::{
 };
 use log::debug;
 
+use crate::errors::{ErhLlmError, Result};
 use crate::{ChatMessage as ErhChatMessage, ModelConfig};
 
 /// Sends a single user message to the Anthropic API, optionally injecting
@@ -21,10 +22,11 @@ pub async fn anthropic_chat(
     model: &ModelConfig,
     history: Vec<ErhChatMessage>,
     user_text: String,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<String> {
     let client = ClientBuilder::new()
         .api_key(api_key)
-        .build()?;
+        .build()
+        .map_err(|e| ErhLlmError::AnthropicError(e.to_string()))?;
 
     let mut builder = ChatRequestBuilder::new();
 
@@ -44,7 +46,10 @@ pub async fn anthropic_chat(
     let request = builder.build();
     debug!("Sending prompt to Anthropic: {user_text}");
 
-    let response = client.execute_chat(request).await?;
+    let response: anthropic_rust::types::Message = client
+        .execute_chat(request)
+        .await
+        .map_err(|e| ErhLlmError::AnthropicError(e.to_string()))?;
 
     let text = response
         .content
@@ -73,10 +78,11 @@ pub async fn anthropic_chat_with_system(
     history: Vec<ErhChatMessage>,
     system: String,
     user_query: String,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<String> {
     let client = ClientBuilder::new()
         .api_key(api_key)
-        .build()?;
+        .build()
+        .map_err(|e| ErhLlmError::AnthropicError(e.to_string()))?;
 
     let mut builder = ChatRequestBuilder::new().system(system);
 
@@ -95,7 +101,10 @@ pub async fn anthropic_chat_with_system(
     let request = builder.build();
     debug!("Sending prompt to Anthropic (with system): {user_query}");
 
-    let response = client.execute_chat(request).await?;
+    let response = client
+        .execute_chat(request)
+        .await
+        .map_err(|e| ErhLlmError::AnthropicError(e.to_string()))?;
 
     let text = response
         .content

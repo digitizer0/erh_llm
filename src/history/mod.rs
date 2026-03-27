@@ -4,6 +4,7 @@ use std::sync::Arc;
 use log::debug;
 
 use crate::ChatMessage;
+use crate::errors::ErhLlmError;
 
 #[cfg(feature="mysql_hist")]
 mod mysql;
@@ -27,7 +28,7 @@ pub(crate) trait HistoryTrait {
     /// # Errors
     /// Returns an error if the underlying database operation fails or if
     /// `msg` fails validation.
-    fn store(&mut self, msg: &mut ChatMessage) -> Result<(), Box<dyn std::error::Error>>;
+    fn store(&mut self, msg: &mut ChatMessage) -> Result<(), ErhLlmError>;
 
     /// Retrieves all [`ChatMessage`]s associated with the given `chatuuid`.
     ///
@@ -36,14 +37,14 @@ pub(crate) trait HistoryTrait {
     ///
     /// # Errors
     /// Returns an error if the underlying database query fails.
-    fn read(&self, chatuuid: &str) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>>;
+    fn read(&self, chatuuid: &str) -> Result<Vec<ChatMessage>, ErhLlmError>;
 
     /// Sets the feedback value for a specific message row identified by
     /// `message_id`.  `feedback` must be `"U"` (thumbs-up) or `"D"` (thumbs-down).
     ///
     /// # Errors
     /// Returns an error if the underlying database update fails.
-    fn set_feedback(&mut self, message_id: i64, feedback: &str) -> Result<(), Box<dyn std::error::Error>>;
+    fn set_feedback(&mut self, message_id: i64, feedback: &str) -> Result<(), ErhLlmError>;
 }
 
 #[derive(Debug, Default,Clone, PartialEq, Eq)]
@@ -133,7 +134,7 @@ impl HistoryTrait for History {
     /// # Errors
     /// Returns `"No history backend configured"` if no backend is enabled at
     /// compile time, or propagates the backend-specific error otherwise.
-    fn store(&mut self, msg: &mut ChatMessage) -> Result<(), Box<dyn std::error::Error>> {
+    fn store(&mut self, msg: &mut ChatMessage) -> Result<(), ErhLlmError> {
         debug!("Storing message in history: {msg:?}");
 
 #[cfg(feature="sqlite_hist")]
@@ -154,7 +155,7 @@ impl HistoryTrait for History {
             return x.store(msg);
         }
 
-        Err("No history backend configured".into())
+        Err(ErhLlmError::NoHistoryBackend)
     }
 
     /// Delegates to the active backend's [`HistoryTrait::read`] implementation.
@@ -165,7 +166,7 @@ impl HistoryTrait for History {
     ///
     /// # Errors
     /// Propagates any error returned by the active backend.
-    fn read(&self, _chatuuid: &str) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
+    fn read(&self, _chatuuid: &str) -> Result<Vec<ChatMessage>, ErhLlmError> {
 #[cfg(feature="sqlite_hist")]
         if let Some(x) = &self.sqlite {
             debug!("Reading sqlite history");
@@ -188,14 +189,14 @@ impl HistoryTrait for History {
         Ok(vec![])
     }
 
-    fn set_feedback(&mut self, message_id: i64, feedback: &str) -> Result<(), Box<dyn std::error::Error>> {
+    fn set_feedback(&mut self, message_id: i64, feedback: &str) -> Result<(), ErhLlmError> {
 #[cfg(feature="mssql_hist")]
         if let Some(x) = &mut self.mssql {
             debug!("Setting feedback via mssql history");
             return x.set_feedback(message_id, feedback);
         }
         let _ = (message_id, feedback);
-        Err("No history backend configured".into())
+        Err(ErhLlmError::NoHistoryBackend)
     }
     
 }

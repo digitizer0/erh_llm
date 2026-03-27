@@ -10,14 +10,17 @@ use mistralai_client::v1::{
     constants::Model,
 };
 
+use crate::errors::{ErhLlmError, Result};
+
 /// Sends `text` to the MistralAI cloud API using the provided `api_key`.
 ///
 /// Returns the raw text response. History is **not** persisted by this function.
 pub fn mistral_chat(
     api_key: &str,
     text: String,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let client = MistralClient::new(Some(api_key.to_string()), None, None, None)?;
+) -> Result<String> {
+    let client = MistralClient::new(Some(api_key.to_string()), None, None, None)
+        .map_err(|e| ErhLlmError::MistralError(e.to_string()))?;
     let model = Model::MistralMediumLatest;
     let messages = vec![ChatMessage {
         role: ChatMessageRole::User,
@@ -29,7 +32,9 @@ pub fn mistral_chat(
     });
 
     debug!("Sending prompt to MistralAI: {text}");
-    let response = client.chat(model, messages, options)?;
+    let response = client
+        .chat(model, messages, options)
+        .map_err(|e| ErhLlmError::MistralError(e.to_string()))?;
     debug!("Received response: {}", response.object);
     Ok(response.object)
 }

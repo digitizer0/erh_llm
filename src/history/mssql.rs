@@ -3,6 +3,7 @@ use tokio::net::TcpStream;
 use log::debug;
 use futures::stream::TryStreamExt;
 
+use crate::errors::ErhLlmError;
 use crate::ChatMessage;
 use crate::history::HistoryTrait;
 
@@ -222,9 +223,9 @@ impl HistoryTrait for MsSqlHistory {
     /// # Errors
     /// Returns an error if validation fails, if a database connection cannot be
     /// established, or if the INSERT statement fails.
-    fn store(&mut self, msg: &mut ChatMessage) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn store(&mut self, msg: &mut ChatMessage) -> Result<(), ErhLlmError> {
         if !msg.validate() {
-            return Err(anyhow::anyhow!("Invalid chat message data").into());
+            return Err(ErhLlmError::InvalidMessage("empty user or bot content".into()));
         }
         let clean = msg.noemoji();
         let config_string = self.config_string.clone();
@@ -250,9 +251,7 @@ impl HistoryTrait for MsSqlHistory {
             }
 
             Ok(inserted_id)
-        }).map_err(|e| -> Box<dyn std::error::Error> {
-            Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("MSSQL store error: {}", e)))
-        })?;
+        }).map_err(|e| ErhLlmError::OllamaError(format!("MSSQL store error: {e}")))?;
 
         msg.id = Some(inserted_id);
         Ok(())
@@ -267,10 +266,10 @@ impl HistoryTrait for MsSqlHistory {
     /// # Errors
     /// Returns an error if a database connection cannot be established or if
     /// the SELECT query fails.
-    fn set_feedback(&mut self, message_id: i64, feedback: &str) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn set_feedback(&mut self, message_id: i64, feedback: &str) -> Result<(), ErhLlmError> {
         // Validate feedback value
         if feedback != "U" && feedback != "D" {
-            return Err(format!("Invalid feedback value '{}': must be 'U' or 'D'", feedback).into());
+            return Err(ErhLlmError::InvalidFeedback(feedback.to_string()));
         }
         let config_string = self.config_string.clone();
         let feedback = feedback.to_string();
@@ -281,12 +280,10 @@ impl HistoryTrait for MsSqlHistory {
             let sql = "UPDATE chat_history SET feedback = @P1 WHERE id = @P2";
             client.execute(sql, &[&feedback.as_str(), &message_id]).await?;
             Ok(())
-        }).map_err(|e| -> Box<dyn std::error::Error> {
-            Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("MSSQL set_feedback error: {}", e)))
-        })
+        }).map_err(|e| ErhLlmError::ConfigError(format!("MSSQL set_feedback error: {e}")))
     }
 
-    fn read(&self, chatuuid: &str) -> std::result::Result<Vec<crate::ChatMessage>, Box<dyn std::error::Error>> {
+    fn read(&self, chatuuid: &str) -> Result<Vec<crate::ChatMessage>, ErhLlmError> {
         let config_string = self.config_string.clone();
         let chatuuid = chatuuid.to_string();
         
@@ -317,8 +314,6 @@ impl HistoryTrait for MsSqlHistory {
             }
             
             Ok(messages)
-        }).map_err(|e| -> Box<dyn std::error::Error> { 
-            Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("MSSQL read error: {}", e)))
-        })
+        }).map_err(|e| ErhLlmError::ConfigError(format!("MSSQL read error: {e}")))
     }
 }

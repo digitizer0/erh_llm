@@ -9,10 +9,12 @@ mod composer;
 mod ollama;
 mod mistral;
 mod anthropic;
+pub mod errors;
 #[cfg(feature="tools")]
 mod components;
 
 pub use composer::{ComposedPrompt, PromptComposer};
+pub use errors::{ErhLlmError, Result};
 
 pub use history::HistoryConfig;
 use serde::{Deserialize, Serialize};
@@ -221,7 +223,7 @@ impl Query {
     /// # Returns
     /// A vector of `f32` values representing the embedding, or an empty vector if
     /// the Ollama request fails.
-    pub async fn embed(config:(String,u16,ModelConfig),chunk:String) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    pub async fn embed(config:(String,u16,ModelConfig),chunk:String) -> Result<Vec<f32>> {
         let (url, port, model) = config;
         ollama::ollama_embed(&url, port, &model, chunk).await
     }
@@ -231,7 +233,7 @@ impl Query {
     ///
     /// This is a convenience static method that does not require an existing [`Query`]
     /// instance.
-    pub async fn get_history(uuid: &str, history: HistoryConfig) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
+    pub async fn get_history(uuid: &str, history: HistoryConfig) -> Result<Vec<ChatMessage>> {
         let h = History::new(history);
         let msgs = h.read(uuid)?;
         Ok(msgs)
@@ -243,7 +245,7 @@ impl Query {
     /// # Errors
     /// Returns an error if the history backend is not configured or if the
     /// database update fails.
-    pub async fn set_chat_feedback(message_id: i64, feedback: &str, history: HistoryConfig) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn set_chat_feedback(message_id: i64, feedback: &str, history: HistoryConfig) -> Result<()> {
         let mut h = History::new(history);
         h.set_feedback(message_id, feedback)
     }
@@ -287,7 +289,7 @@ impl Query {
     ///
     /// The response is stored in the history backend (if configured) and returned
     /// as a `String`. Returns an empty string on send failure.
-    pub async fn execute(&mut self) -> Result<String, Box<dyn std::error::Error>> {
+    pub async fn execute(&mut self) -> Result<String> {
         debug!("Running query with message: {}", self.setup.prompt);
         debug!("ComponentRegistry: {:?}", self.components.as_ref().map(|c| c.components.len()));
 
@@ -318,7 +320,7 @@ impl Query {
     ///   string if there are fewer than two turns.
     ///
     /// Returns `("" , "")` when no history is available.
-    async fn _summarize_history(&self) -> Result<(String, String),Box<dyn std::error::Error>> {
+    async fn _summarize_history(&self) -> Result<(String, String)> {
         let mut history = if let Some(history) = &self.history {
             let history = history.read(&self.setup.chatuuid)?;
             if history.is_empty() {
@@ -357,22 +359,18 @@ impl Query {
     ///
     /// # Errors
     /// Returns an error if the LLM request fails or if history storage fails.
-    pub async fn send(&mut self, prompt: String) -> Result<String, Box<dyn std::error::Error>> {
+    pub async fn send(&mut self, prompt: String) -> Result<String> {
         let resp = self.send_raw(UserPrompt::Default(prompt)).await?;
         let mut msg =ChatMessage { id: None, user: self.setup.user.clone(), user_message: self.setup.prompt.clone(), bot_response: resp.clone(), timestamp: 0 , chatuuid: self.setup.chatuuid.clone(),..Default::default() };
         debug!("Storing message in history: {msg:?}");
-        let x = if let Some(history) = &mut self.history {
-            history.store(&mut msg)
-        } else {
-            Ok(())
-        };
-        if let Err(e) = x {
-            warn!("Error storing message in history: {e}");
-            Err(e)
-        } else {
-            self.last_message_id = msg.id;
-            Ok(resp)
+        if let Some(history) = &mut self.history {
+            if let Err(e) = history.store(&mut msg) {
+                warn!("Error storing message in history: {e}");
+                return Err(e);
+            }
         }
+        self.last_message_id = msg.id;
+        Ok(resp)
     }
 
     /// Sends a system message and a user query to the LLM as separate role turns,
@@ -386,7 +384,7 @@ impl Query {
     ///
     /// # Errors
     /// Returns an error if the LLM request or history storage fails.
-    pub async fn send_with_system(&mut self, system: String, user_query: String) -> Result<String, Box<dyn std::error::Error>> {
+    pub async fn send_with_system(&mut self, system: String, user_query: String) -> Result<String> {
         let resp = self.send_raw_with_system(system, user_query).await?;
         let mut msg = ChatMessage {
             id: None,
@@ -398,26 +396,22 @@ impl Query {
             ..Default::default()
         };
         debug!("Storing message in history: {msg:?}");
-        let x = if let Some(history) = &mut self.history {
-            history.store(&mut msg)
-        } else {
-            Ok(())
-        };
-        if let Err(e) = x {
-            warn!("Error storing message in history: {e}");
-            Err(e)
-        } else {
-            self.last_message_id = msg.id;
-            Ok(resp)
+        if let Some(history) = &mut self.history {
+            if let Err(e) = history.store(&mut msg) {
+                warn!("Error storing message in history: {e}");
+                return Err(e);
+            }
         }
+        self.last_message_id = msg.id;
+        Ok(resp)
     }
 
     /// Reads the chat history for the current session from the persistence layer.
     ///
     /// Returns an empty vec when no history backend is configured.
-    fn read_history(&self) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
+    fn read_history(&self) -> Result<Vec<ChatMessage>> {
         if let Some(history) = &self.history {
-            Ok(history.read(&self.setup.chatuuid)?)
+            history.read(&self.setup.chatuuid)
         } else {
             Ok(vec![])
         }
@@ -425,7 +419,7 @@ impl Query {
 
     /// Like [`Query::send_raw`] but prepends a `system` role message before the
     /// user turn. History is **not** written by this method.
-    async fn send_raw_with_system(&self, system: String, user_query: String) -> Result<String, Box<dyn std::error::Error>> {
+    async fn send_raw_with_system(&self, system: String, user_query: String) -> Result<String> {
         let resp = match &self.connection {
             LLM::Ollama(host, port, model) => {
                 let history = self.read_history()?;
@@ -460,7 +454,7 @@ impl Query {
     ///
     /// # Errors
     /// Returns an error if the underlying LLM client reports a failure.
-    pub async fn send_raw(&self, prompt: UserPrompt) -> Result<String, Box<dyn std::error::Error>> {
+    pub async fn send_raw(&self, prompt: UserPrompt) -> Result<String> {
         let (text, _model) = match prompt {
             UserPrompt::Default(p) => (p, ModelConfig::default()),
             UserPrompt::Model(model, p) => (p, model),
@@ -477,12 +471,13 @@ impl Query {
                 // TODO: Add tool support for MistralAI
                 mistral::mistral_chat(apikey, text)?
             }
+
             LLM::Anthropic(api_key, model) => {
                 let history = self.read_history()?;
                 anthropic::anthropic_chat(api_key, model, history, text).await?
             }
             // Add other LLMs here as needed
-            _ => panic!("Not possible"),
+            _ => return Err(ErhLlmError::ConfigError("LLM backend not supported".into())),
         };
         debug!("Received response: {resp}");
         Ok(resp)
@@ -494,7 +489,7 @@ impl Query {
     /// Returns an empty string if no classification criteria have been set via
     /// [`Query::_classify`]. The raw LLM response is returned as-is; callers are
     /// responsible for parsing the result.
-    pub async fn classify_query(&mut self) -> Result<String, Box<dyn std::error::Error>> {
+    pub async fn classify_query(&mut self) -> Result<String> {
     
         let r = if let Some(classification) = &self.classification {
             let prompt = format!("QUERY: Classify following prompt by these criteria: {}\n\nPROMPT: {}", classification, self.setup.prompt);
@@ -510,7 +505,7 @@ impl Query {
     ///
     /// This is a convenience wrapper that stores `classification` on the query
     /// before delegating to [`Query::classify_query`].
-    pub async fn _classify(&mut self, classification: String) -> Result<String, Box<dyn std::error::Error>> {
+    pub async fn _classify(&mut self, classification: String) -> Result<String> {
         self.classification = Some(classification);
         self.classify_query().await
     }

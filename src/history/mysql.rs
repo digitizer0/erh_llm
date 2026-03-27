@@ -2,6 +2,7 @@ use mysql::*;
 use mysql::prelude::*;
 use log::debug;
 
+use crate::errors::ErhLlmError;
 use crate::ChatMessage;
 use crate::history::HistoryTrait;
 
@@ -61,9 +62,9 @@ impl HistoryTrait for MysqlHistory {
     /// # Errors
     /// Returns an error if validation fails, if a connection cannot be
     /// obtained, or if the INSERT statement fails.
-    fn store(&mut self, msg: &mut ChatMessage) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn store(&mut self, msg: &mut ChatMessage) -> Result<(), ErhLlmError> {
         if !msg.validate() {
-            return Err(anyhow::anyhow!("Invalid chat message data").into());
+            return Err(ErhLlmError::InvalidMessage("empty user or bot content".into()));
         }
         let msg = msg.noemoji();
         let mut conn = self.get_connection()?;
@@ -83,7 +84,7 @@ impl HistoryTrait for MysqlHistory {
     /// # Errors
     /// Returns an error if a connection cannot be obtained or if the SELECT
     /// query fails.
-    fn read(&self, chatuuid: &str) -> std::result::Result<Vec<crate::ChatMessage>, Box<dyn std::error::Error>> {
+    fn read(&self, chatuuid: &str) -> Result<Vec<crate::ChatMessage>, ErhLlmError> {
         let mut conn = self.get_connection()?;
         let result: Vec<(String, String, String, String)> = conn.exec(
             "SELECT username, user_message, bot_response, chatuuid FROM chat_history WHERE chatuuid = ?",
@@ -93,5 +94,22 @@ impl HistoryTrait for MysqlHistory {
             .map(ChatMessage::from_tuple)
             .collect();
         Ok(result)
+    }
+
+    /// Sets the feedback value (`"U"` or `"D"`) for the row identified by `message_id`.
+    ///
+    /// # Errors
+    /// Returns [`ErhLlmError::InvalidFeedback`] if the value is not `"U"` or `"D"`,
+    /// or a [`ErhLlmError::MysqlError`] if the update fails.
+    fn set_feedback(&mut self, message_id: i64, feedback: &str) -> Result<(), ErhLlmError> {
+        if feedback != "U" && feedback != "D" {
+            return Err(ErhLlmError::InvalidFeedback(feedback.to_string()));
+        }
+        let mut conn = self.get_connection()?;
+        conn.exec_drop(
+            "UPDATE chat_history SET feedback = ? WHERE id = ?",
+            (feedback, message_id),
+        )?;
+        Ok(())
     }
 }
