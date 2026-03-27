@@ -278,7 +278,7 @@ impl HistoryTrait for MsSqlHistory {
             let history = MsSqlHistory::new(config_string);
             let mut client = history.get_client().await?;
             let sql = "UPDATE chat_history SET feedback = @P1 WHERE id = @P2";
-            client.execute(sql, &[&feedback.as_str(), &message_id]).await?;
+            client.execute(sql, &[&feedback.as_str(), &message_id as &dyn tiberius::ToSql]).await?;
             Ok(())
         }).map_err(|e| ErhLlmError::ConfigError(format!("MSSQL set_feedback error: {e}")))
     }

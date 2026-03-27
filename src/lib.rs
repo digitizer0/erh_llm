@@ -6,6 +6,7 @@
 
 mod history;
 mod composer;
+pub mod provider;
 mod ollama;
 mod mistral;
 mod anthropic;
@@ -15,14 +16,16 @@ mod components;
 
 pub use composer::{ComposedPrompt, PromptComposer};
 pub use errors::{ErhLlmError, Result};
-
+pub use provider::{LlmProvider, OllamaConfig, AnthropicConfig, MistralConfig};
+pub use ollama::{OllamaProvider, ModelOptions};
+pub use anthropic::{AnthropicProvider, AnthropicOptions};
+pub use mistral::{MistralProvider, MistralOptions};
 pub use history::HistoryConfig;
 use serde::{Deserialize, Serialize};
 
 use crate::history::HistoryTrait;
 
 use log::{debug, warn};
-pub use ollama_rs::models::ModelOptions;
 
 use crate::history::History;
 #[cfg(feature="tools")]
@@ -82,7 +85,7 @@ impl ChatMessage {
             !self.user_message.is_empty()
                 && !self.bot_response.is_empty()
                 //&& self.timestamp != 0
-                //&& self.chatuuid.len() == 40 
+                //&& self.chatuuid.len() == 40
         }
     }
 
@@ -109,7 +112,7 @@ impl ChatMessage {
         msg.bot_response = demoji!(self.bot_response);
         msg
     }
-    
+
 }
 
 /// Identifies the LLM backend to connect to.
@@ -172,7 +175,7 @@ impl QuerySetup {
     pub fn new() -> Self {
         QuerySetup::default()
     }
-    
+
 }
 
 impl Default for LLM {
@@ -278,12 +281,12 @@ impl Query {
             _ => {
                 q.history = None;
             }
-            
+
         }
         q
-    }   
+    }
 
-    
+
     /// Builds a fully formatted prompt from [`QuerySetup`] (constraint, context,
     /// user query, and style) and sends it to the configured LLM backend.
     ///
@@ -490,7 +493,7 @@ impl Query {
     /// [`Query::_classify`]. The raw LLM response is returned as-is; callers are
     /// responsible for parsing the result.
     pub async fn classify_query(&mut self) -> Result<String> {
-    
+
         let r = if let Some(classification) = &self.classification {
             let prompt = format!("QUERY: Classify following prompt by these criteria: {}\n\nPROMPT: {}", classification, self.setup.prompt);
             self.send(prompt).await?

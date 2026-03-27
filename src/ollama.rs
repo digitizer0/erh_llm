@@ -3,6 +3,8 @@
 //! Provides [`ollama_embed`], [`ollama_chat`], and [`ollama_chat_with_system`]
 //! as thin wrappers around `ollama-rs` so that [`crate::Query`] does not need
 //! to import Ollama types directly.
+//!
+//! Also provides [`OllamaProvider`] which implements the [`crate::provider::LlmProvider`] trait.
 
 use log::debug;
 use ollama_rs::{
@@ -15,6 +17,7 @@ use ollama_rs::{
 pub use ollama_rs::models::ModelOptions;
 
 use crate::errors::{ErhLlmError, Result};
+use crate::provider::{LlmProvider, OllamaConfig};
 use crate::{ModelConfig, ChatMessage as ErhChatMessage};
 #[cfg(feature = "tools")]
 use crate::ComponentRegistry;
@@ -167,4 +170,90 @@ fn build_chat_history(history: Vec<ErhChatMessage>) -> Vec<ChatMessage> {
         ));
     }
     out
+}
+
+// ── LlmProvider implementation ──────────────────────────────────────────────
+
+/// Ollama provider implementation.
+///
+/// This struct implements the [`LlmProvider`] trait for Ollama backends.
+#[derive(Debug, Clone)]
+pub struct OllamaProvider {
+    host: String,
+    port: u16,
+}
+
+impl OllamaProvider {
+    /// Creates a new Ollama provider with the given configuration.
+    pub fn new(config: OllamaConfig) -> Self {
+        Self {
+            host: config.host,
+            port: config.port,
+        }
+    }
+
+    /// Creates a new Ollama provider with the given host and port.
+    pub fn with_host_port(host: String, port: u16) -> Self {
+        Self { host, port }
+    }
+}
+
+impl Default for OllamaProvider {
+    fn default() -> Self {
+        let config = OllamaConfig::default();
+        Self::new(config)
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for OllamaProvider {
+    type Options = ModelOptions;
+
+    async fn embed(&self, model: &ModelConfig, chunk: String) -> Result<Vec<f32>> {
+        ollama_embed(&self.host, self.port, model, chunk).await
+    }
+
+    async fn chat(
+        &self,
+        model: &ModelConfig,
+        history: Vec<ErhChatMessage>,
+        options: Self::Options,
+        user_text: String,
+        #[cfg(feature = "tools")] components: Option<&ComponentRegistry>,
+    ) -> Result<String> {
+        ollama_chat(
+            &self.host,
+            self.port,
+            model,
+            history,
+            options,
+            user_text,
+            #[cfg(feature = "tools")]
+            components,
+        )
+        .await
+    }
+
+    async fn chat_with_system(
+        &self,
+        model: &ModelConfig,
+        history: Vec<ErhChatMessage>,
+        options: Self::Options,
+        system: String,
+        user_query: String,
+        #[cfg(feature = "tools")] components: Option<&ComponentRegistry>,
+    ) -> Result<String> {
+        ollama_chat_with_system(
+            &self.host,
+            self.port,
+            model,
+            history,
+            options,
+            system,
+            user_query,
+            #[cfg(feature = "tools")]
+            components,
+        )
+        .await
+    }
 }

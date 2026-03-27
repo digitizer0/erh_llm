@@ -728,6 +728,7 @@ name = "erh_llm"
 version = "0.4.0"
 dependencies = [
  "anthropic_rust",
+ "async-trait",
  "futures",
  "log",
  "mistralai-client",

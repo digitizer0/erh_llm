@@ -3,6 +3,8 @@
 //! Provides [`anthropic_chat`] and [`anthropic_chat_with_system`] as thin
 //! wrappers around `anthropic_rust` so that [`crate::Query`] does not need to
 //! import Anthropic types directly.
+//!
+//! Also provides [`AnthropicProvider`] which implements the [`crate::provider::LlmProvider`] trait.
 
 use anthropic_rust::{
     ClientBuilder,
@@ -11,7 +13,10 @@ use anthropic_rust::{
 use log::debug;
 
 use crate::errors::{ErhLlmError, Result};
+use crate::provider::{LlmProvider, AnthropicConfig};
 use crate::{ChatMessage as ErhChatMessage, ModelConfig};
+#[cfg(feature = "tools")]
+use crate::ComponentRegistry;
 
 /// Sends a single user message to the Anthropic API, optionally injecting
 /// chat history as alternating user/assistant turns.
@@ -121,4 +126,73 @@ pub async fn anthropic_chat_with_system(
 
     debug!("Received response from Anthropic: {text}");
     Ok(text)
+}
+
+// ── LlmProvider implementation ──────────────────────────────────────────────
+
+/// Anthropic provider implementation.
+///
+/// This struct implements the [`LlmProvider`] trait for Anthropic backends.
+#[derive(Debug, Clone)]
+pub struct AnthropicProvider {
+    api_key: String,
+}
+
+impl AnthropicProvider {
+    /// Creates a new Anthropic provider with the given configuration.
+    pub fn new(config: AnthropicConfig) -> Self {
+        Self {
+            api_key: config.api_key,
+        }
+    }
+
+    /// Creates a new Anthropic provider with the given API key.
+    pub fn with_api_key(api_key: String) -> Self {
+        Self { api_key }
+    }
+}
+
+/// Options for Anthropic requests.
+///
+/// Currently a placeholder - Anthropic doesn't have as many options as Ollama.
+#[derive(Debug, Clone, Default)]
+pub struct AnthropicOptions {
+    // Reserved for future use
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for AnthropicProvider {
+    type Options = AnthropicOptions;
+
+    async fn embed(&self, _model: &ModelConfig, _chunk: String) -> Result<Vec<f32>> {
+        // Anthropic doesn't provide a native embeddings API
+        Err(ErhLlmError::AnthropicError(
+            "Embeddings not supported by Anthropic provider".to_string(),
+        ))
+    }
+
+    async fn chat(
+        &self,
+        model: &ModelConfig,
+        history: Vec<ErhChatMessage>,
+        _options: Self::Options,
+        user_text: String,
+        #[cfg(feature = "tools")] _components: Option<&ComponentRegistry>,
+    ) -> Result<String> {
+        // Note: Tools are not yet implemented for Anthropic
+        anthropic_chat(&self.api_key, model, history, user_text).await
+    }
+
+    async fn chat_with_system(
+        &self,
+        model: &ModelConfig,
+        history: Vec<ErhChatMessage>,
+        _options: Self::Options,
+        system: String,
+        user_query: String,
+        #[cfg(feature = "tools")] _components: Option<&ComponentRegistry>,
+    ) -> Result<String> {
+        // Note: Tools are not yet implemented for Anthropic
+        anthropic_chat_with_system(&self.api_key, model, history, system, user_query).await
+    }
 }
