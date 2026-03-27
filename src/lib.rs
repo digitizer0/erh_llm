@@ -8,6 +8,7 @@ mod history;
 mod composer;
 mod ollama;
 mod mistral;
+mod anthropic;
 #[cfg(feature="tools")]
 mod components;
 
@@ -116,6 +117,8 @@ pub enum LLM {
     Ollama(String, u16, ModelConfig),
     /// The MistralAI cloud API. Contains the API key.
     MistralAI(String),
+    /// The Anthropic Claude API. Contains the API key and model config.
+    Anthropic(String, ModelConfig),
     /// Placeholder variant for future backends; panics if used.
     Dummy,
 }
@@ -432,7 +435,13 @@ impl Query {
                     #[cfg(feature = "tools")] self.components.as_ref(),
                 ).await?
             }
-            // For non-Ollama backends fall back to a single concatenated prompt.
+            LLM::Anthropic(api_key, model) => {
+                let history = self.read_history()?;
+                anthropic::anthropic_chat_with_system(
+                    api_key, model, history, system, user_query
+                ).await?
+            }
+            // For other backends fall back to a single concatenated prompt.
             _ => {
                 let fallback = format!("{system}\n\n{user_query}");
                 self.send_raw(UserPrompt::Default(fallback)).await?
@@ -467,6 +476,10 @@ impl Query {
             LLM::MistralAI(apikey) => {
                 // TODO: Add tool support for MistralAI
                 mistral::mistral_chat(apikey, text)?
+            }
+            LLM::Anthropic(api_key, model) => {
+                let history = self.read_history()?;
+                anthropic::anthropic_chat(api_key, model, history, text).await?
             }
             // Add other LLMs here as needed
             _ => panic!("Not possible"),
