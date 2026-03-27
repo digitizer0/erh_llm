@@ -8,7 +8,7 @@
 
 use anthropic_rust::{
     ClientBuilder,
-    types::{ChatRequestBuilder, ContentBlock, Role},
+    types::{ChatRequestBuilder, ContentBlock, Model, Role},
     Tool, ToolBuilder,
 };
 use log::debug;
@@ -18,6 +18,27 @@ use crate::provider::{LlmProvider, AnthropicConfig};
 use crate::{ChatMessage as ErhChatMessage, ModelConfig};
 #[cfg(feature = "tools")]
 use crate::ComponentRegistry;
+
+/// Maps a model name string to the corresponding [`Model`] enum variant.
+/// Unknown names are passed through as-is via [`Model::Other`].
+fn model_from_str(name: &str) -> Model {
+    match name {
+        "claude-3-haiku-20240307"    => Model::Claude3Haiku20240307,
+        "claude-3-5-haiku-20241022" => Model::Claude35Haiku20241022,
+        "claude-3-sonnet-20240229"  => Model::Claude3Sonnet20240229,
+        "claude-3-opus-20240229"    => Model::Claude3Opus20240229,
+        "claude-3-5-sonnet-20241022" => Model::Claude35Sonnet20241022,
+        "claude-3-5-sonnet-20250114" => Model::Claude35Sonnet20250114,
+        "claude-4-sonnet-20250514"  => Model::Claude4Sonnet20250514,
+        "claude-sonnet-4-5"         => Model::ClaudeSonnet45,
+        "claude-sonnet-4-6"         => Model::ClaudeSonnet46,
+        "claude-opus-4-5"           => Model::ClaudeOpus45,
+        other => {
+            debug!("Passing model name '{}' as-is to Anthropic API", other);
+            Model::Other(other.to_string())
+        }
+    }
+}
 
 // ── Tool conversion helpers ─────────────────────────────────────────────────
 
@@ -111,7 +132,15 @@ pub async fn anthropic_chat(
     let mut builder = ChatRequestBuilder::new();
 
     // Inject prior turns as alternating user/assistant messages.
+    // Skip turns with no plain-text response — these occurred when the model
+    // used tools and the tool result (not the final text) was what got stored,
+    // or the turn was interrupted. Replaying such turns would produce a
+    // `tool_use` without a following `tool_result`, which Anthropic rejects.
     for msg in history {
+        if msg.bot_response.trim().is_empty() {
+            debug!("Skipping history turn with empty bot_response for user: {}", msg.user_message);
+            continue;
+        }
         builder = builder
             .message(Role::User, ContentBlock::text(msg.user_message))
             .message(Role::Assistant, ContentBlock::text(msg.bot_response));
@@ -136,10 +165,14 @@ pub async fn anthropic_chat(
     }
 
     let request = builder.build();
+    // Keep the initial messages so the tool loop can reconstruct the full
+    // conversation (history + user turn + assistant tool_use + tool_result...).
+    let initial_messages = request.messages.clone();
     debug!("Sending prompt to Anthropic: {user_text}");
 
+    let anthropic_model = model_from_str(&model.model);
     let mut response: anthropic_rust::types::Message = client
-        .execute_chat(request)
+        .execute_chat_with_model(anthropic_model.clone(), request)
         .await
         .map_err(|e| ErhLlmError::AnthropicError(e.to_string()))?;
 
@@ -147,12 +180,13 @@ pub async fn anthropic_chat(
     #[cfg(feature = "tools")]
     if model.tool.unwrap_or(false) {
         if let Some(comp) = components {
-            let mut conversation_messages = vec![];
-            let max_iterations = 10; // Prevent infinite loops
+            // Accumulates (assistant tool_use, user tool_result) pairs added
+            // after the initial messages during this request's tool loop.
+            let mut extra_messages: Vec<(Role, Vec<ContentBlock>)> = vec![];
+            let max_iterations = 10;
             let mut iteration = 0;
 
             while iteration < max_iterations {
-                // Check if the response contains tool uses
                 let tool_uses: Vec<_> = response
                     .content
                     .iter()
@@ -166,16 +200,15 @@ pub async fn anthropic_chat(
                     .collect();
 
                 if tool_uses.is_empty() {
-                    // No more tool uses, extract text response
                     break;
                 }
 
                 debug!("Anthropic requested {} tool calls", tool_uses.len());
 
-                // Store the assistant's response with tool uses
-                conversation_messages.push((Role::Assistant, response.content.clone()));
+                // Append the assistant turn containing the tool_use blocks.
+                extra_messages.push((Role::Assistant, response.content.clone()));
 
-                // Execute each tool and prepare results
+                // Execute tools and collect results.
                 let mut tool_results = vec![];
                 for (tool_id, tool_name, input) in tool_uses {
                     debug!("Executing tool: {} with id: {}", tool_name, tool_id);
@@ -190,21 +223,19 @@ pub async fn anthropic_chat(
                         }
                     }
                 }
+                extra_messages.push((Role::User, tool_results));
 
-                // Send tool results back to Claude
+                // Rebuild the full conversation: initial messages + all
+                // tool_use/tool_result pairs accumulated so far.
                 let mut new_builder = ChatRequestBuilder::new();
-
-                // Rebuild conversation with history and tool results
-                for msg in &conversation_messages {
-                    new_builder = new_builder.message_with_content(msg.0.clone(), msg.1.clone());
+                new_builder = new_builder.messages(initial_messages.clone());
+                for (role, content) in &extra_messages {
+                    new_builder = new_builder.message_with_content(role.clone(), content.clone());
                 }
-                new_builder = new_builder.message_with_content(Role::User, tool_results);
 
                 if let Some(temp) = model.temperature {
                     new_builder = new_builder.temperature(temp);
                 }
-
-                // Re-add tools for potential further use
                 let tools = convert_tools_to_anthropic(comp);
                 if !tools.is_empty() {
                     new_builder = new_builder.tools(tools);
@@ -212,7 +243,7 @@ pub async fn anthropic_chat(
 
                 let new_request = new_builder.build();
                 response = client
-                    .execute_chat(new_request)
+                    .execute_chat_with_model(anthropic_model.clone(), new_request)
                     .await
                     .map_err(|e| ErhLlmError::AnthropicError(e.to_string()))?;
 
@@ -262,7 +293,15 @@ pub async fn anthropic_chat_with_system(
 
     let mut builder = ChatRequestBuilder::new().system(system.clone());
 
+    // Skip turns with no plain-text response — these occurred when the model
+    // used tools and the tool result (not the final text) was what got stored.
+    // Replaying such turns would produce a `tool_use` without a following
+    // `tool_result`, which Anthropic rejects with a 400 error.
     for msg in history {
+        if msg.bot_response.trim().is_empty() {
+            debug!("Skipping history turn with empty bot_response for user: {}", msg.user_message);
+            continue;
+        }
         builder = builder
             .message(Role::User, ContentBlock::text(msg.user_message))
             .message(Role::Assistant, ContentBlock::text(msg.bot_response));
@@ -287,10 +326,12 @@ pub async fn anthropic_chat_with_system(
     }
 
     let request = builder.build();
+    let initial_messages = request.messages.clone();
     debug!("Sending prompt to Anthropic (with system): {user_query}");
 
+    let anthropic_model = model_from_str(&model.model);
     let mut response = client
-        .execute_chat(request)
+        .execute_chat_with_model(anthropic_model.clone(), request)
         .await
         .map_err(|e| ErhLlmError::AnthropicError(e.to_string()))?;
 
@@ -298,12 +339,11 @@ pub async fn anthropic_chat_with_system(
     #[cfg(feature = "tools")]
     if model.tool.unwrap_or(false) {
         if let Some(comp) = components {
-            let mut conversation_messages = vec![];
-            let max_iterations = 10; // Prevent infinite loops
+            let mut extra_messages: Vec<(Role, Vec<ContentBlock>)> = vec![];
+            let max_iterations = 10;
             let mut iteration = 0;
 
             while iteration < max_iterations {
-                // Check if the response contains tool uses
                 let tool_uses: Vec<_> = response
                     .content
                     .iter()
@@ -317,16 +357,13 @@ pub async fn anthropic_chat_with_system(
                     .collect();
 
                 if tool_uses.is_empty() {
-                    // No more tool uses, extract text response
                     break;
                 }
 
                 debug!("Anthropic requested {} tool calls", tool_uses.len());
 
-                // Store the assistant's response with tool uses
-                conversation_messages.push((Role::Assistant, response.content.clone()));
+                extra_messages.push((Role::Assistant, response.content.clone()));
 
-                // Execute each tool and prepare results
                 let mut tool_results = vec![];
                 for (tool_id, tool_name, input) in tool_uses {
                     debug!("Executing tool: {} with id: {}", tool_name, tool_id);
@@ -341,21 +378,19 @@ pub async fn anthropic_chat_with_system(
                         }
                     }
                 }
+                extra_messages.push((Role::User, tool_results));
 
-                // Send tool results back to Claude
+                // Reconstruct full conversation: system + initial messages +
+                // all tool_use/tool_result pairs accumulated so far.
                 let mut new_builder = ChatRequestBuilder::new().system(system.clone());
-
-                // Rebuild conversation with history and tool results
-                for msg in &conversation_messages {
-                    new_builder = new_builder.message_with_content(msg.0.clone(), msg.1.clone());
+                new_builder = new_builder.messages(initial_messages.clone());
+                for (role, content) in &extra_messages {
+                    new_builder = new_builder.message_with_content(role.clone(), content.clone());
                 }
-                new_builder = new_builder.message_with_content(Role::User, tool_results);
 
                 if let Some(temp) = model.temperature {
                     new_builder = new_builder.temperature(temp);
                 }
-
-                // Re-add tools for potential further use
                 let tools = convert_tools_to_anthropic(comp);
                 if !tools.is_empty() {
                     new_builder = new_builder.tools(tools);
@@ -363,7 +398,7 @@ pub async fn anthropic_chat_with_system(
 
                 let new_request = new_builder.build();
                 response = client
-                    .execute_chat(new_request)
+                    .execute_chat_with_model(anthropic_model.clone(), new_request)
                     .await
                     .map_err(|e| ErhLlmError::AnthropicError(e.to_string()))?;
 

@@ -308,7 +308,13 @@ impl Query {
 
         // Send the system prompt as a dedicated system turn so Ollama keeps
         // context, constraints and style clearly separated from the user query.
-        let x = self.send_with_system(composed.system, composed.user).await.unwrap_or_default();
+        let x = match self.send_with_system(composed.system, composed.user).await {
+            Ok(result) => result,
+            Err(e) => {
+                log::error!("send_with_system failed: {e}");
+                return Err(e);
+            }
+        };
         log::debug!("Query result: {x:?}");
         Ok(x)
     }
