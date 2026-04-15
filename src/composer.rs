@@ -6,8 +6,7 @@
 //! - **RAG context** is injected into the system message so the model can
 //!   cleanly distinguish grounding material from the question.
 //! - The **user turn** contains only the bare question / task.
-//! - Section markers use a consistent, model-agnostic format (`### Section`)
-//!   that most instruction-tuned models recognise as structural dividers.
+//! - Prompts are clean and concise without unnecessary formatting overhead.
 //!
 //! The [`PromptComposer`] `constraint` field doubles as the role/system
 //! instruction. There is no separate `role` field — a constraint such as
@@ -36,10 +35,10 @@ pub struct ComposedPrompt {
 /// let composed = PromptComposer::new()
 ///     .constraint("You are a helpful assistant. Answer only with information found in the context.")
 ///     .context("The document states that the deadline is 2026-06-01.")
-///     .style("formal")
+///     .style("Be concise and direct.")
 ///     .build("When is the deadline?");
 ///
-/// // composed.system → system message with constraint + context + style
+/// // composed.system → "You are a helpful assistant...\n\nContext: The document...\n\nBe concise..."
 /// // composed.user   → "When is the deadline?"
 /// ```
 #[derive(Debug, Clone, Default)]
@@ -92,43 +91,34 @@ impl PromptComposer {
 
     /// Builds a [`ComposedPrompt`] from the configured parts and the given user query.
     ///
-    /// The system message is structured as:
-    /// ```text
-    /// ### Instructions
-    /// <constraint>          (or default role)
-    ///
-    /// ### Context           (omitted when empty)
-    /// <rag context>
-    ///
-    /// ### Style             (omitted when empty)
-    /// <style>
-    /// ```
+    /// The system message is a clean, compact composition of constraint, context, and style
+    /// without unnecessary formatting overhead. Components are separated by natural language
+    /// connectors when present.
     ///
     /// The user message is simply the raw `query` string.
     pub fn build(self, query: impl Into<String>) -> ComposedPrompt {
         let mut system = String::new();
 
-        // Constraint doubles as the role instruction.
+        // Start with the core constraint/role instruction
         let instructions = self
             .constraint
             .unwrap_or_else(|| "You are a helpful assistant.".to_string());
-        system.push_str("### Instructions\n");
         system.push_str(&instructions);
-        system.push('\n');
 
-        // RAG context — placed in the system message so it is clearly separated
-        // from the user turn and not replayed in conversational history.
+        // Add RAG context inline if present, separated naturally
         if let Some(ctx) = self.context {
-            system.push_str("\n### Context\n");
-            system.push_str(&ctx);
-            system.push('\n');
+            if !ctx.is_empty() {
+                system.push_str("\n\nContext: ");
+                system.push_str(&ctx);
+            }
         }
 
-        // Style
+        // Add style instructions inline if present
         if let Some(style) = self.style {
-            system.push_str("\n### Style\n");
-            system.push_str(&style);
-            system.push('\n');
+            if !style.is_empty() {
+                system.push_str("\n\n");
+                system.push_str(&style);
+            }
         }
 
         ComposedPrompt {
