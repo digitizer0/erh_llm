@@ -1,6 +1,5 @@
 use std::{pin::Pin, sync::Arc};
 use futures::Future;
-use ollama_rs::generation::tools::ToolHolder;
 
 /// A reusable resource component with async execution capabilities.
 ///
@@ -18,6 +17,7 @@ pub struct Resource {
     ///
     /// This is a thread-safe, cloneable function that takes a string reference and returns
     /// a future that resolves to a String. The function is wrapped in an Arc for safe sharing.
+    #[allow(clippy::type_complexity)]
     pub func: Arc<dyn for<'a> Fn(&'a String) -> Pin<Box<dyn Future<Output = String> + Send + Sync + 'a>> + Send + Sync>,
 }
 
@@ -70,35 +70,4 @@ impl Resource {
     }
 }
 
-impl ToolHolder for Resource {
-    /// Implements the ToolHolder trait for Resource execution.
-    ///
-    /// Parameters:
-    ///     parameters: JSON-encoded input parameters
-    ///
-    /// Returns:
-    ///     Future<Output = Result<String, Error>>: Asynchronous operation that:
-    ///     - Serializes parameters to JSON string
-    ///     - Calls the execute() method with the serialized parameters
-    ///     - Returns the result or an error if serialization failed
-    ///
-    /// This implementation:
-    /// 1. Converts input parameters to JSON string
-    /// 2. Executes the resource with the serialized parameters
-    /// 3. Returns successful result or error message
-    ///
-    /// Note: This must be awaited to get the final result
-    fn call(
-        &mut self,
-        parameters: serde_json::Value,
-    ) -> Pin<Box<dyn Future<Output = Result<String, Box<dyn std::error::Error + Send + Sync>>> + '_ + Send + Sync>> {
-        Box::pin(async move {
-            let param_str = serde_json::to_string(&parameters)?;
-            let result = self.execute(&param_str).await;
-            match result {
-                Some(res) => Ok(res),
-                None => Err("Tool execution failed".into()),
-            }
-        })
-    }
-}
+

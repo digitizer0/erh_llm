@@ -107,7 +107,6 @@ impl HistoryTrait for SqliteHistory {
                 bot_response: row.get(2)?,
                 chatuuid: row.get(3)?,
                 timestamp: 0,
-                ollama: None,
             })
         })?;
         let mut messages = Vec::new();

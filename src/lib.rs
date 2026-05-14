@@ -64,8 +64,6 @@ impl ModelConfig {
 /// Represents a single exchange between a user and the bot, used for history persistence.
 #[derive(Debug,Clone,Default)]
 pub struct ChatMessage {
-    /// The underlying Ollama chat message, if this message originated from Ollama.
-    pub ollama: Option<ollama_rs::generation::chat::ChatMessage>,
     /// Optional database row ID assigned after persistence.
     pub id: Option<i64>,
     /// Username or identifier of the human participant.
@@ -140,7 +138,7 @@ pub enum UserPrompt {
 }
 
 /// Holds all per-request configuration that governs how a query is sent to the LLM.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct QuerySetup {
     /// Username or identifier of the human sending the query.
     pub user: String,
@@ -159,20 +157,6 @@ pub struct QuerySetup {
     pub constraint: Option<String>,
 }
 
-impl Default for QuerySetup {
-    fn default() -> Self {
-        QuerySetup {
-            model: ModelConfig::default(),
-            user: String::new(),
-            chatuuid: String::new(),
-            prompt: String::new(),
-            style: None,
-            constraint: None,
-            #[cfg(feature="tools")]
-            components: None,
-        }
-    }
-}
 impl QuerySetup {
     /// Creates a new [`QuerySetup`] with all fields set to their defaults.
     pub fn new() -> Self {
@@ -373,14 +357,13 @@ impl Query {
     /// Returns an error if the LLM request fails or if history storage fails.
     pub async fn send(&mut self, prompt: String) -> Result<String> {
         let resp = self.send_raw(UserPrompt::Default(prompt)).await?;
-        let mut msg =ChatMessage { id: None, user: self.setup.user.clone(), user_message: self.setup.prompt.clone(), bot_response: resp.clone(), timestamp: 0 , chatuuid: self.setup.chatuuid.clone(),..Default::default() };
+        let mut msg = ChatMessage { id: None, user: self.setup.user.clone(), user_message: self.setup.prompt.clone(), bot_response: resp.clone(), timestamp: 0, chatuuid: self.setup.chatuuid.clone() };
         debug!("Storing message in history: {msg:?}");
-        if let Some(history) = &mut self.history {
-            if let Err(e) = history.store(&mut msg) {
+        if let Some(history) = &mut self.history
+            && let Err(e) = history.store(&mut msg) {
                 warn!("Error storing message in history: {e}");
                 return Err(e);
             }
-        }
         self.last_message_id = msg.id;
         Ok(resp)
     }
@@ -405,15 +388,13 @@ impl Query {
             bot_response: resp.clone(),
             timestamp: 0,
             chatuuid: self.setup.chatuuid.clone(),
-            ..Default::default()
         };
         debug!("Storing message in history: {msg:?}");
-        if let Some(history) = &mut self.history {
-            if let Err(e) = history.store(&mut msg) {
+        if let Some(history) = &mut self.history
+            && let Err(e) = history.store(&mut msg) {
                 warn!("Error storing message in history: {e}");
                 return Err(e);
             }
-        }
         self.last_message_id = msg.id;
         Ok(resp)
     }

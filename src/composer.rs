@@ -106,20 +106,18 @@ impl PromptComposer {
         system.push_str(&instructions);
 
         // Add RAG context inline if present, separated naturally
-        if let Some(ctx) = self.context {
-            if !ctx.is_empty() {
+        if let Some(ctx) = self.context
+            && !ctx.is_empty() {
                 system.push_str("\n\nContext: ");
                 system.push_str(&ctx);
             }
-        }
 
         // Add style instructions inline if present
-        if let Some(style) = self.style {
-            if !style.is_empty() {
+        if let Some(style) = self.style
+            && !style.is_empty() {
                 system.push_str("\n\n");
                 system.push_str(&style);
             }
-        }
 
         ComposedPrompt {
             system,

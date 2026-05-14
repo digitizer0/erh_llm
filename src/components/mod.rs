@@ -3,10 +3,6 @@ pub (crate) mod resource;
 pub (crate) mod sampling;
 pub (crate) mod tools;
 
-use ollama_rs::coordinator::Coordinator;
-use ollama_rs::history::ChatHistory;
-use schemars::Schema;
-
 use crate::components::prompt::Prompt;
 use crate::components::resource::Resource;
 use crate::components::sampling::Sampling;
@@ -75,58 +71,66 @@ impl ComponentRegistry {
         self.components.push(component);
     }
 
-    /// Adds all tools and resources from registry components to a coordinator.
+    /// Returns tool definitions as JSON for the Ollama API `tools` field.
     ///
-    /// Parameters:
-    ///     coordinator: Coordinator<T> to which tools will be added
+    /// Each definition has `name`, `description`, and `parameters` keys.
+    pub fn get_tool_definitions(&self) -> Vec<serde_json::Value> {
+        let mut defs = Vec::new();
+        let default_params = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "param": { "type": "string", "description": "The input parameter for this tool." }
+            },
+            "required": ["param"]
+        });
+        for component in &self.components {
+            for tool in &component.tools {
+                defs.push(serde_json::json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": default_params.clone()
+                }));
+            }
+            for resource in &component.resources {
+                defs.push(serde_json::json!({
+                    "name": resource.name,
+                    "description": resource.description,
+                    "parameters": default_params.clone()
+                }));
+            }
+        }
+        defs
+    }
+
+    /// Executes a tool or resource by name with the given JSON arguments.
     ///
-    /// Returns:
-    ///     Coordinator<T>: Updated coordinator with added tools/resources
-    ///
-    /// Side Effects:
-    ///     - Logs debug messages for each added tool/resource
-    ///     - Modifies the provided coordinator by adding tools
-    ///
-    /// Process:
-    ///     1. Iterates through each component in the registry
-    ///     2. Adds all component tools to the coordinator
-    ///     3. Adds all component resources to the coordinator
-    ///     4. Returns the modified coordinator
-    pub fn add_tools<T: ChatHistory>(&mut self, coordinator : Coordinator<T>) -> Coordinator<T> {
-        let mut cd = coordinator;
-        log::debug!("Adding tools from ComponentRegistry with {} components", self.components.len());
-        // Build a reusable schema for tools that accept a single string parameter.
-        // Schema::default() serialises as `{}` which Ollama cannot parse; we need
-        // a proper JSON-Schema object with type+properties so Ollama accepts the
-        // tool definition and knows how to call it.
-        let single_string_schema = Schema::from(
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "param": {
-                        "type": "string",
-                        "description": "The input parameter for this tool."
-                    }
-                },
-                "required": ["param"]
-            })
-            .as_object()
-            .cloned()
-            .unwrap_or_default()
-        );
+    /// Extracts the first string value from the arguments object (or serialises the whole
+    /// value) and passes it to the matching tool/resource.
+    pub async fn execute_tool(&self, name: &str, arguments: serde_json::Value) -> Option<String> {
+        let param = match &arguments {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Object(map) => map
+                .values()
+                .find_map(|v| v.as_str().map(str::to_string))
+                .unwrap_or_else(|| serde_json::to_string(&arguments).unwrap_or_default()),
+            _ => serde_json::to_string(&arguments).unwrap_or_default(),
+        };
 
         for component in &self.components {
             for tool in &component.tools {
-                log::debug!("Adding tool: {}", tool.name);
-                cd = cd.add_tool_custom_schema(tool.name.as_str(), tool.description.as_str(), single_string_schema.clone(), Box::new(tool.clone()));
-
+                if tool.name == name {
+                    log::debug!("Executing tool '{}' with param: {}", name, param);
+                    return tool.execute(&param).await;
+                }
             }
             for resource in &component.resources {
-                log::debug!("Adding resource: {}", resource.name);
-                cd = cd.add_tool_custom_schema(resource.name.as_str(), resource.description.as_str(), single_string_schema.clone(), Box::new(resource.clone()));
-
+                if resource.name == name {
+                    log::debug!("Executing resource '{}' with param: {}", name, param);
+                    return resource.execute(&param).await;
+                }
             }
-        };
-        cd
+        }
+        log::debug!("Tool '{}' not found in registry", name);
+        None
     }
 }

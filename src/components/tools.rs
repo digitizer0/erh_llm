@@ -1,8 +1,6 @@
 /// Module for defining and managing async tool components in the system.
-/// Contains the Tool struct implementation and integration with ollama_rs's ToolHolder trait.
 use std::{pin::Pin, sync::Arc};
 use futures::Future;
-use ollama_rs::generation::tools::ToolHolder;
 
 /// Represents an async tool with a name, description, and implementation.
 ///
@@ -20,6 +18,7 @@ pub struct Tool  {
     ///
     /// Takes a String parameter and returns a boxed future that resolves to a String result.
     /// The function is wrapped in an Arc for shared ownership and thread safety.
+    #[allow(clippy::type_complexity)]
     pub func: Arc<dyn for<'a> Fn(&'a String) -> Pin<Box<dyn Future<Output = String> + Send + Sync + 'a>> + Send + Sync>
 }
 
@@ -65,45 +64,4 @@ impl Tool {
     }
 }
 
-impl ToolHolder for Tool {
-    /// Invokes the tool with provided JSON parameters
-    ///
-    /// # Parameters
-    /// - `parameters`: A JSON value containing the tool's input parameters
-    ///
-    /// # Returns
-    /// A future that resolves to either:
-    /// - Ok(String): The tool's successful result
-    /// - Err(Box<dyn Error>): If serialization or execution fails
-    fn call(
-        &mut self,
-        parameters: serde_json::Value,
-    ) -> Pin<Box<dyn Future<Output = Result<String, Box<dyn std::error::Error + Send + Sync>>> + '_ + Send + Sync>> {
-        Box::pin(async move {
-            // Extract the first string value from the JSON object, or fall back to
-            // serialising the whole value. This handles models that wrap the single
-            // string parameter in an object with an arbitrary key name, e.g.
-            // {"query": "…"}, {"whereclause": "…"}, {"param": "…"}, etc.
-            log::debug!("Tool '{}' called with parameters: {}", self.name, parameters);
-            let param_str = match &parameters {
-                serde_json::Value::String(s) => s.clone(),
-                serde_json::Value::Object(map) => {
-                    // Pick the first string value; fall back to serialising the object.
-                    map.values()
-                        .find_map(|v| v.as_str().map(str::to_string))
-                        .unwrap_or_else(|| serde_json::to_string(&parameters).unwrap_or_default())
-                }
-                _ => serde_json::to_string(&parameters).unwrap_or_default(),
-            };
 
-            // Execute the tool with the extracted parameter
-            let result = self.execute(&param_str).await;
-
-            // Return the result or a failure error
-            match result {
-                Some(res) => Ok(res),
-                None => Err("Tool execution failed".into()),
-            }
-        })
-    }
-}

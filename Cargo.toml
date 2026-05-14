@@ -4,16 +4,15 @@ version = "0.4.0"
 edition = "2024"
 
 [dependencies]
-#ollama-rs = { version = "0.3", features = ["macros", "tool-implementations"] }
-#ollama-rs = { path = "../ollama-rs/ollama-rs", features = ["macros", "tool-implementations"] }
-ollama-rs = { git = "http://github.com/digitizer0/ollama-rs.git",  tag = "0.3.52", features = ["macros", "tool-implementations"] }
 log = "0.4"
 regex = "1.12.3"
 futures = "0.3"
 thiserror = "2.0"
 async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
-# Always required now (used by local mistral_client)
+# HTTP client for Ollama REST API and Mistral
 reqwest = { version = "0.13", features = ["json", "stream"] }
 
 #SQLite
@@ -30,18 +29,11 @@ tokio = { version = "1.0", features = ["rt", "net", "rt-multi-thread"] }
 tiberius = { version = "0.12", optional = true }
 tokio-util = { version = "0.7", features = ["compat", "io"] }
 
-#Fjall (To be used instead of memory history???)
-#fjall = { version = "3.0", optional = true }
-
-#Tools
-serde = { version = "1.0", features = ["derive"] , optional = true }
-serde_json = { version = "1.0", optional = true }
-schemars = { version = "1.2", optional = true }
-
 [features]
 default = ["tools"]
 sqlite_hist = ["rusqlite", "uuid","r2d2", "r2d2_sqlite"]
 mysql_hist = ["mysql"]
 mssql_hist = ["tiberius"]
-tools = ["serde", "serde_json", "schemars"]
-anthropic = ["serde", "serde_json"]
+tools = []
+anthropic = []
+
