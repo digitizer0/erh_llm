@@ -1,464 +1,714 @@
-//! Anthropic backend implementation for erh_llm.
+//! Native Anthropic API implementation using reqwest.
 //!
-//! Provides [`anthropic_chat`] and [`anthropic_chat_with_system`] as thin
-//! wrappers around `anthropic_rust` so that [`crate::Query`] does not need to
-//! import Anthropic types directly.
-//!
-//! Also provides [`AnthropicProvider`] which implements the [`crate::provider::LlmProvider`] trait.
+//! Features:
+//! - Chat (Messages API)
+//! - Extended Thinking (claude-3-7-sonnet+)
+//! - Prompt Caching
+//! - Streaming (SSE)
+//! - Vision / Multimodal (base64 & URL images)
+//! - Token Counting
+//! - Tool Use loop
 
-use anthropic_rust::{
-    ClientBuilder,
-    types::{ChatRequestBuilder, ContentBlock, Model, Role},
-    Tool, ToolBuilder,
-};
 use log::debug;
+use serde::{Deserialize, Serialize};
 
 use crate::errors::{ErhLlmError, Result};
-use crate::provider::{LlmProvider, AnthropicConfig};
+use crate::provider::{AnthropicConfig, LlmProvider};
 use crate::{ChatMessage as ErhChatMessage, ModelConfig};
 #[cfg(feature = "tools")]
 use crate::ComponentRegistry;
 
-/// Maps a model name string to the corresponding [`Model`] enum variant.
-/// Unknown names are passed through as-is via [`Model::Other`].
-fn model_from_str(name: &str) -> Model {
-    match name {
-        "claude-3-haiku-20240307"    => Model::Claude3Haiku20240307,
-        "claude-3-5-haiku-20241022" => Model::Claude35Haiku20241022,
-        "claude-3-sonnet-20240229"  => Model::Claude3Sonnet20240229,
-        "claude-3-opus-20240229"    => Model::Claude3Opus20240229,
-        "claude-3-5-sonnet-20241022" => Model::Claude35Sonnet20241022,
-        "claude-3-5-sonnet-20250114" => Model::Claude35Sonnet20250114,
-        "claude-4-sonnet-20250514"  => Model::Claude4Sonnet20250514,
-        "claude-sonnet-4-5"         => Model::ClaudeSonnet45,
-        "claude-sonnet-4-6"         => Model::ClaudeSonnet46,
-        "claude-opus-4-5"           => Model::ClaudeOpus45,
-        other => {
-            debug!("Passing model name '{}' as-is to Anthropic API", other);
-            Model::Other(other.to_string())
+// ── Constants ────────────────────────────────────────────────────────────────
+
+const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
+const COUNT_TOKENS_URL: &str = "https://api.anthropic.com/v1/messages/count_tokens";
+const API_VERSION: &str = "2023-06-01";
+const DEFAULT_MAX_TOKENS: u32 = 8192;
+
+// ── Error ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub enum AnthropicApiError {
+    Http(reqwest::Error),
+    Io(std::io::Error),
+    Api { status: u16, body: String },
+    Json(serde_json::Error),
+}
+
+impl std::fmt::Display for AnthropicApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Http(e) => write!(f, "HTTP error: {e}"),
+            Self::Io(e) => write!(f, "IO error: {e}"),
+            Self::Api { status, body } => write!(f, "Anthropic API error {status}: {body}"),
+            Self::Json(e) => write!(f, "JSON error: {e}"),
         }
     }
 }
 
-// ── Tool conversion helpers ─────────────────────────────────────────────────
+impl From<reqwest::Error> for AnthropicApiError {
+    fn from(e: reqwest::Error) -> Self { Self::Http(e) }
+}
+impl From<std::io::Error> for AnthropicApiError {
+    fn from(e: std::io::Error) -> Self { Self::Io(e) }
+}
+impl From<serde_json::Error> for AnthropicApiError {
+    fn from(e: serde_json::Error) -> Self { Self::Json(e) }
+}
+impl From<AnthropicApiError> for ErhLlmError {
+    fn from(e: AnthropicApiError) -> Self {
+        ErhLlmError::AnthropicError(e.to_string())
+    }
+}
 
-#[cfg(feature = "tools")]
-fn convert_tools_to_anthropic(components: &ComponentRegistry) -> Vec<Tool> {
-    let mut tools = Vec::new();
-    
-    for component in &components.components {
-        for tool in &component.tools {
-            let anthropic_tool = ToolBuilder::new(&tool.name)
-                .description(&tool.description)
-                .property("param", "string", Some("The input parameter for this tool."), true)
-                .build();
-            tools.push(anthropic_tool);
-        }
-        
-        for resource in &component.resources {
-            let anthropic_tool = ToolBuilder::new(&resource.name)
-                .description(&resource.description)
-                .property("param", "string", Some("The input parameter for this resource."), true)
-                .build();
-            tools.push(anthropic_tool);
+// ── API types ────────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum Role { User, Assistant }
+
+/// `cache_control: {"type":"ephemeral"}` — enables prompt caching on this block.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CacheControl {
+    #[serde(rename = "type")]
+    pub kind: String, // "ephemeral"
+}
+
+impl CacheControl {
+    pub fn ephemeral() -> Self { Self { kind: "ephemeral".into() } }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ImageSource {
+    /// Base64-encoded image data.
+    Base64 { media_type: String, data: String },
+    /// Publicly accessible image URL.
+    Url { url: String },
+}
+
+/// A content block in a message.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentBlock {
+    Text {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
+    Image {
+        source: ImageSource,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
+    /// Returned by the model when it wants to call a tool.
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    /// Sent by the user to return a tool result.
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+    },
+    /// Extended thinking block (claude-3-7-sonnet+).
+    Thinking { thinking: String },
+    /// Redacted thinking block (opaque).
+    RedactedThinking { data: String },
+}
+
+impl ContentBlock {
+    pub fn text(s: impl Into<String>) -> Self {
+        Self::Text { text: s.into(), cache_control: None }
+    }
+    pub fn text_cached(s: impl Into<String>) -> Self {
+        Self::Text { text: s.into(), cache_control: Some(CacheControl::ephemeral()) }
+    }
+    pub fn image_base64(media_type: impl Into<String>, data: impl Into<String>) -> Self {
+        Self::Image {
+            source: ImageSource::Base64 { media_type: media_type.into(), data: data.into() },
+            cache_control: None,
         }
     }
-    
+    pub fn image_url(url: impl Into<String>) -> Self {
+        Self::Image {
+            source: ImageSource::Url { url: url.into() },
+            cache_control: None,
+        }
+    }
+    pub fn tool_result(tool_use_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::ToolResult { tool_use_id: tool_use_id.into(), content: content.into() }
+    }
+    /// Returns the text if this is a Text block.
+    pub fn as_text(&self) -> Option<&str> {
+        if let Self::Text { text, .. } = self { Some(text) } else { None }
+    }
+    /// Returns the thinking if this is a Thinking block.
+    pub fn as_thinking(&self) -> Option<&str> {
+        if let Self::Thinking { thinking } = self { Some(thinking) } else { None }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ApiMessage {
+    pub role: Role,
+    pub content: Vec<ContentBlock>,
+}
+
+impl ApiMessage {
+    pub fn user(content: Vec<ContentBlock>) -> Self { Self { role: Role::User, content } }
+    pub fn user_text(text: impl Into<String>) -> Self {
+        Self::user(vec![ContentBlock::text(text)])
+    }
+    pub fn assistant(content: Vec<ContentBlock>) -> Self { Self { role: Role::Assistant, content } }
+    pub fn assistant_text(text: impl Into<String>) -> Self {
+        Self::assistant(vec![ContentBlock::text(text)])
+    }
+}
+
+/// A system prompt block — supports prompt caching via `cache_control`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SystemBlock {
+    #[serde(rename = "type")]
+    pub kind: String, // "text"
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
+}
+
+impl SystemBlock {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self { kind: "text".into(), text: text.into(), cache_control: None }
+    }
+    pub fn cached(text: impl Into<String>) -> Self {
+        Self { kind: "text".into(), text: text.into(), cache_control: Some(CacheControl::ephemeral()) }
+    }
+}
+
+/// Tool definition sent to the API.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ToolDef {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
+}
+
+impl ToolDef {
+    /// Simple single-string-input tool definition.
+    pub fn simple(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "input": { "type": "string", "description": "Input for this tool" }
+                },
+                "required": ["input"]
+            }),
+            cache_control: None,
+        }
+    }
+}
+
+/// Extended thinking configuration.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ThinkingConfig {
+    #[serde(rename = "type")]
+    pub kind: String, // "enabled"
+    pub budget_tokens: u32,
+}
+
+impl ThinkingConfig {
+    pub fn enabled(budget_tokens: u32) -> Self {
+        Self { kind: "enabled".into(), budget_tokens }
+    }
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct ChatRequest {
+    pub model: String,
+    pub max_tokens: u32,
+    pub messages: Vec<ApiMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system: Option<Vec<SystemBlock>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ToolDef>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<bool>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ChatResponse {
+    pub content: Vec<ContentBlock>,
+    pub stop_reason: Option<String>,
+    pub usage: Option<Usage>,
+}
+
+impl ChatResponse {
+    /// Concatenates all Text blocks into a single string.
+    pub fn text(&self) -> String {
+        self.content.iter().filter_map(|b| b.as_text()).collect::<Vec<_>>().join("")
+    }
+    /// Concatenates all Thinking blocks into a single string.
+    pub fn thinking(&self) -> String {
+        self.content.iter().filter_map(|b| b.as_thinking()).collect::<Vec<_>>().join("")
+    }
+    pub fn tool_uses(&self) -> Vec<(&str, &str, &serde_json::Value)> {
+        self.content.iter().filter_map(|b| {
+            if let ContentBlock::ToolUse { id, name, input } = b {
+                Some((id.as_str(), name.as_str(), input))
+            } else { None }
+        }).collect()
+    }
+}
+
+#[derive(Deserialize, Debug, Default)]
+pub struct Usage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cache_creation_input_tokens: Option<u32>,
+    pub cache_read_input_tokens: Option<u32>,
+}
+
+/// Returned by [`AnthropicClient::stream_chat`].
+pub struct StreamResult {
+    /// The full concatenated text response.
+    pub text: String,
+    /// Extended thinking content (if any).
+    pub thinking: String,
+    pub usage: Option<Usage>,
+}
+
+// ── SSE event types (internal) ───────────────────────────────────────────────
+
+#[derive(Deserialize, Debug)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum SseEvent {
+    Ping,
+    MessageStart { message: SseMessageStart },
+    ContentBlockStart { index: u32, content_block: SseContentBlockStart },
+    ContentBlockDelta { index: u32, delta: SseDelta },
+    ContentBlockStop { index: u32 },
+    MessageDelta { delta: SseMessageDelta, usage: Option<SseDeltaUsage> },
+    MessageStop,
+    Error { error: SseError },
+}
+
+#[derive(Deserialize, Debug)]
+struct SseMessageStart {
+    usage: Option<Usage>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum SseContentBlockStart {
+    Text { text: String },
+    Thinking { thinking: String },
+    ToolUse { id: String, name: String },
+    RedactedThinking { data: String },
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum SseDelta {
+    TextDelta { text: String },
+    ThinkingDelta { thinking: String },
+    InputJsonDelta { partial_json: String },
+    SignatureDelta { signature: String },
+}
+
+#[derive(Deserialize, Debug)]
+struct SseMessageDelta {
+    stop_reason: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct SseDeltaUsage {
+    output_tokens: u32,
+}
+
+#[derive(Deserialize, Debug)]
+struct SseError {
+    #[serde(rename = "type")]
+    kind: String,
+    message: String,
+}
+
+// ── AnthropicClient ──────────────────────────────────────────────────────────
+
+pub struct AnthropicClient {
+    api_key: String,
+    client: reqwest::Client,
+}
+
+impl AnthropicClient {
+    pub fn new(api_key: impl Into<String>) -> Self {
+        Self { api_key: api_key.into(), client: reqwest::Client::new() }
+    }
+
+    fn base_request(&self, url: &str) -> reqwest::RequestBuilder {
+        self.client
+            .post(url)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", API_VERSION)
+            .header("anthropic-beta", "interleaved-thinking-2025-05-14")
+    }
+
+    /// Non-streaming chat request.
+    pub async fn send(&self, request: &ChatRequest) -> Result<ChatResponse, AnthropicApiError> {
+        let resp = self.base_request(MESSAGES_URL).json(request).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AnthropicApiError::Api { status, body });
+        }
+        Ok(resp.json::<ChatResponse>().await?)
+    }
+
+    /// Streaming chat. Calls `on_chunk` for each text delta as it arrives.
+    /// Returns the complete result when the stream ends.
+    pub async fn stream_chat(
+        &self,
+        request: &ChatRequest,
+        mut on_chunk: impl FnMut(String) + Send,
+    ) -> Result<StreamResult, AnthropicApiError> {
+        use tokio::io::AsyncBufReadExt;
+        use tokio_util::io::StreamReader;
+        use futures::TryStreamExt;
+
+        let mut req = request.clone();
+        req.stream = Some(true);
+
+        let resp = self.base_request(MESSAGES_URL).json(&req).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AnthropicApiError::Api { status, body });
+        }
+
+        let byte_stream = resp
+            .bytes_stream()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+        let reader = StreamReader::new(byte_stream);
+        let mut lines = tokio::io::BufReader::new(reader).lines();
+
+        let mut text = String::new();
+        let mut thinking = String::new();
+        let mut usage: Option<Usage> = None;
+
+        while let Some(line) = lines.next_line().await? {
+            let line = line.trim().to_string();
+            if !line.starts_with("data: ") { continue; }
+            let data = &line[6..];
+            if data == "[DONE]" { break; }
+
+            match serde_json::from_str::<SseEvent>(data) {
+                Ok(SseEvent::ContentBlockDelta { delta, .. }) => match delta {
+                    SseDelta::TextDelta { text: chunk } => {
+                        text.push_str(&chunk);
+                        on_chunk(chunk);
+                    }
+                    SseDelta::ThinkingDelta { thinking: chunk } => {
+                        thinking.push_str(&chunk);
+                    }
+                    _ => {}
+                },
+                Ok(SseEvent::MessageStart { message }) => {
+                    usage = message.usage;
+                }
+                Ok(SseEvent::Error { error }) => {
+                    return Err(AnthropicApiError::Api {
+                        status: 0,
+                        body: format!("{}: {}", error.kind, error.message),
+                    });
+                }
+                Ok(SseEvent::MessageStop) => break,
+                _ => {}
+            }
+        }
+
+        Ok(StreamResult { text, thinking, usage })
+    }
+
+    /// Count tokens for a request without sending it.
+    pub async fn count_tokens(&self, request: &ChatRequest) -> Result<u32, AnthropicApiError> {
+        #[derive(Deserialize)]
+        struct CountResponse { input_tokens: u32 }
+
+        let resp = self.base_request(COUNT_TOKENS_URL).json(request).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AnthropicApiError::Api { status, body });
+        }
+        Ok(resp.json::<CountResponse>().await?.input_tokens)
+    }
+}
+
+// ── Tool conversion helpers ──────────────────────────────────────────────────
+
+#[cfg(feature = "tools")]
+fn registry_to_tool_defs(components: &ComponentRegistry) -> Vec<ToolDef> {
+    let mut tools = Vec::new();
+    for component in &components.components {
+        for t in &component.tools {
+            tools.push(ToolDef::simple(&t.name, &t.description));
+        }
+        for r in &component.resources {
+            tools.push(ToolDef::simple(&r.name, &r.description));
+        }
+    }
     tools
 }
 
 #[cfg(feature = "tools")]
-async fn execute_tool(
+async fn execute_tool_from_registry(
     components: &ComponentRegistry,
     tool_name: &str,
     input: &serde_json::Value,
 ) -> Result<String> {
-    // Extract the parameter from the input JSON
-    let param_str = match input {
+    let param = match input {
         serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Object(map) => {
-            // Try to find "param" key or use the first string value
-            map.get("param")
-                .and_then(|v| v.as_str())
-                .or_else(|| map.values().find_map(|v| v.as_str()))
-                .unwrap_or("")
-                .to_string()
-        }
+        serde_json::Value::Object(map) => map
+            .get("input")
+            .or_else(|| map.get("param"))
+            .and_then(|v| v.as_str())
+            .or_else(|| map.values().find_map(|v| v.as_str()))
+            .unwrap_or("")
+            .to_string(),
         _ => serde_json::to_string(input).unwrap_or_default(),
     };
 
-    // Search for the tool in the component registry
     for component in &components.components {
-        // Check tools
-        for tool in &component.tools {
-            if tool.name == tool_name {
-                debug!("Executing tool '{}' with param: {}", tool_name, param_str);
-                return tool.execute(&param_str)
-                    .await
-                    .ok_or_else(|| ErhLlmError::AnthropicError(format!("Tool '{}' returned None", tool_name)));
+        for t in &component.tools {
+            if t.name == tool_name {
+                return t.execute(&param).await
+                    .ok_or_else(|| ErhLlmError::AnthropicError(format!("Tool '{tool_name}' returned None")));
             }
         }
-        
-        // Check resources
-        for resource in &component.resources {
-            if resource.name == tool_name {
-                debug!("Executing resource '{}' with param: {}", tool_name, param_str);
-                return resource.execute(&param_str)
-                    .await
-                    .ok_or_else(|| ErhLlmError::AnthropicError(format!("Resource '{}' returned None", tool_name)));
+        for r in &component.resources {
+            if r.name == tool_name {
+                return r.execute(&param).await
+                    .ok_or_else(|| ErhLlmError::AnthropicError(format!("Resource '{tool_name}' returned None")));
             }
         }
     }
-
-    Err(ErhLlmError::AnthropicError(format!("Tool '{}' not found", tool_name)))
+    Err(ErhLlmError::AnthropicError(format!("Tool '{tool_name}' not found")))
 }
 
-/// Sends a single user message to the Anthropic API, optionally injecting
-/// chat history as alternating user/assistant turns and tools.
-///
-/// Returns the raw text response. History is **not** persisted by this function.
+// ── Core chat helpers ─────────────────────────────────────────────────────────
+
+/// Build history messages, skipping turns with empty bot responses
+/// (which indicate a tool-use turn that should not be replayed as plain text).
+fn build_history_messages(history: Vec<ErhChatMessage>) -> Vec<ApiMessage> {
+    let mut msgs = Vec::new();
+    for msg in history {
+        if msg.bot_response.trim().is_empty() {
+            debug!("Skipping history turn with empty bot_response");
+            continue;
+        }
+        msgs.push(ApiMessage::user_text(msg.user_message));
+        msgs.push(ApiMessage::assistant_text(msg.bot_response));
+    }
+    msgs
+}
+
+/// Run the tool-use agentic loop. `initial_messages` is everything up to and
+/// including the first user turn; `response` is the first assistant response.
+/// Returns the final text response.
+#[cfg(feature = "tools")]
+async fn run_tool_loop(
+    client: &AnthropicClient,
+    base_request: &ChatRequest,
+    initial_messages: Vec<ApiMessage>,
+    mut response: ChatResponse,
+    components: &ComponentRegistry,
+) -> Result<ChatResponse> {
+    const MAX_ITER: u32 = 10;
+    let mut extra: Vec<ApiMessage> = Vec::new();
+
+    for _ in 0..MAX_ITER {
+        let tool_uses: Vec<_> = response
+            .content
+            .iter()
+            .filter_map(|b| {
+                if let ContentBlock::ToolUse { id, name, input } = b {
+                    Some((id.clone(), name.clone(), input.clone()))
+                } else { None }
+            })
+            .collect();
+
+        if tool_uses.is_empty() { break; }
+
+        debug!("Tool loop: {} tool call(s) requested", tool_uses.len());
+
+        // Append the assistant turn (contains ToolUse blocks).
+        extra.push(ApiMessage::assistant(response.content.clone()));
+
+        // Execute tools and collect results.
+        let mut results = Vec::new();
+        for (id, name, input) in tool_uses {
+            debug!("Executing tool '{}' (id={})", name, id);
+            let result = match execute_tool_from_registry(components, &name, &input).await {
+                Ok(r) => r,
+                Err(e) => format!("Error: {e}"),
+            };
+            results.push(ContentBlock::tool_result(&id, result));
+        }
+        extra.push(ApiMessage::user(results));
+
+        // Rebuild full message list and send.
+        let mut messages = initial_messages.clone();
+        messages.extend(extra.clone());
+
+        let mut new_req = base_request.clone();
+        new_req.messages = messages;
+
+        response = client.send(&new_req).await.map_err(ErhLlmError::from)?;
+    }
+
+    Ok(response)
+}
+
+// ── Public chat functions ────────────────────────────────────────────────────
+
 pub async fn anthropic_chat(
     api_key: &str,
     model: &ModelConfig,
     history: Vec<ErhChatMessage>,
     user_text: String,
+    thinking_budget: Option<u32>,
     #[cfg(feature = "tools")] components: Option<&ComponentRegistry>,
 ) -> Result<String> {
-    let client = ClientBuilder::new()
-        .api_key(api_key)
-        .build()
-        .map_err(|e| ErhLlmError::AnthropicError(e.to_string()))?;
+    let client = AnthropicClient::new(api_key);
 
-    let mut builder = ChatRequestBuilder::new();
+    let mut messages = build_history_messages(history);
+    messages.push(ApiMessage::user_text(&user_text));
 
-    // Inject prior turns as alternating user/assistant messages.
-    // Skip turns with no plain-text response — these occurred when the model
-    // used tools and the tool result (not the final text) was what got stored,
-    // or the turn was interrupted. Replaying such turns would produce a
-    // `tool_use` without a following `tool_result`, which Anthropic rejects.
-    for msg in history {
-        if msg.bot_response.trim().is_empty() {
-            debug!("Skipping history turn with empty bot_response for user: {}", msg.user_message);
-            continue;
-        }
-        builder = builder
-            .message(Role::User, ContentBlock::text(msg.user_message))
-            .message(Role::Assistant, ContentBlock::text(msg.bot_response));
-    }
+    let mut request = ChatRequest {
+        model: model.model.clone(),
+        max_tokens: DEFAULT_MAX_TOKENS,
+        messages: messages.clone(),
+        system: None,
+        tools: None,
+        thinking: thinking_budget.map(ThinkingConfig::enabled),
+        temperature: model.temperature,
+        stream: None,
+    };
 
-    builder = builder.user_message(ContentBlock::text(user_text.clone()));
-
-    if let Some(temp) = model.temperature {
-        builder = builder.temperature(temp);
-    }
-
-    // Add tools if available and enabled
     #[cfg(feature = "tools")]
     if model.tool.unwrap_or(false) {
         if let Some(comp) = components {
-            let tools = convert_tools_to_anthropic(comp);
-            if !tools.is_empty() {
-                debug!("Adding {} tools to Anthropic request", tools.len());
-                builder = builder.tools(tools);
+            let defs = registry_to_tool_defs(comp);
+            if !defs.is_empty() {
+                request.tools = Some(defs);
             }
         }
     }
 
-    let request = builder.build();
-    // Keep the initial messages so the tool loop can reconstruct the full
-    // conversation (history + user turn + assistant tool_use + tool_result...).
-    let initial_messages = request.messages.clone();
-    debug!("Sending prompt to Anthropic: {user_text}");
+    debug!("Sending to Anthropic (model={}): {user_text}", model.model);
+    let response = client.send(&request).await.map_err(ErhLlmError::from)?;
 
-    let anthropic_model = model_from_str(&model.model);
-    let mut response: anthropic_rust::types::Message = client
-        .execute_chat_with_model(anthropic_model.clone(), request)
-        .await
-        .map_err(|e| ErhLlmError::AnthropicError(e.to_string()))?;
-
-    // Handle tool use loop
     #[cfg(feature = "tools")]
-    if model.tool.unwrap_or(false) {
+    let response = if model.tool.unwrap_or(false) {
         if let Some(comp) = components {
-            // Accumulates (assistant tool_use, user tool_result) pairs added
-            // after the initial messages during this request's tool loop.
-            let mut extra_messages: Vec<(Role, Vec<ContentBlock>)> = vec![];
-            let max_iterations = 10;
-            let mut iteration = 0;
+            run_tool_loop(&client, &request, messages, response, comp).await?
+        } else { response }
+    } else { response };
 
-            while iteration < max_iterations {
-                let tool_uses: Vec<_> = response
-                    .content
-                    .iter()
-                    .filter_map(|block| {
-                        if let ContentBlock::ToolUse { id, name, input } = block {
-                            Some((id.clone(), name.clone(), input.clone()))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                if tool_uses.is_empty() {
-                    break;
-                }
-
-                debug!("Anthropic requested {} tool calls", tool_uses.len());
-
-                // Append the assistant turn containing the tool_use blocks.
-                extra_messages.push((Role::Assistant, response.content.clone()));
-
-                // Execute tools and collect results.
-                let mut tool_results = vec![];
-                for (tool_id, tool_name, input) in tool_uses {
-                    debug!("Executing tool: {} with id: {}", tool_name, tool_id);
-                    match execute_tool(comp, &tool_name, &input).await {
-                        Ok(result) => {
-                            tool_results.push(ContentBlock::tool_result(tool_id, result));
-                        }
-                        Err(e) => {
-                            let error_msg = format!("Error executing tool '{}': {}", tool_name, e);
-                            debug!("{}", error_msg);
-                            tool_results.push(ContentBlock::tool_result(tool_id, error_msg));
-                        }
-                    }
-                }
-                extra_messages.push((Role::User, tool_results));
-
-                // Rebuild the full conversation: initial messages + all
-                // tool_use/tool_result pairs accumulated so far.
-                let mut new_builder = ChatRequestBuilder::new();
-                new_builder = new_builder.messages(initial_messages.clone());
-                for (role, content) in &extra_messages {
-                    new_builder = new_builder.message_with_content(role.clone(), content.clone());
-                }
-
-                if let Some(temp) = model.temperature {
-                    new_builder = new_builder.temperature(temp);
-                }
-                let tools = convert_tools_to_anthropic(comp);
-                if !tools.is_empty() {
-                    new_builder = new_builder.tools(tools);
-                }
-
-                let new_request = new_builder.build();
-                response = client
-                    .execute_chat_with_model(anthropic_model.clone(), new_request)
-                    .await
-                    .map_err(|e| ErhLlmError::AnthropicError(e.to_string()))?;
-
-                iteration += 1;
-            }
-
-            if iteration >= max_iterations {
-                debug!("Warning: Tool use loop reached max iterations");
-            }
-        }
-    }
-
-    // Extract final text response
-    let text = response
-        .content
-        .into_iter()
-        .filter_map(|block| {
-            if let ContentBlock::Text { text, .. } = block {
-                Some(text)
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("");
-
-    debug!("Received response from Anthropic: {text}");
+    let text = response.text();
+    debug!("Anthropic response: {text}");
     Ok(text)
 }
 
-/// Like [`anthropic_chat`] but prepends a system prompt before the
-/// conversational turns.
-///
-/// Returns the raw text response. History is **not** persisted by this function.
 pub async fn anthropic_chat_with_system(
     api_key: &str,
     model: &ModelConfig,
     history: Vec<ErhChatMessage>,
     system: String,
     user_query: String,
+    thinking_budget: Option<u32>,
+    cache_system: bool,
     #[cfg(feature = "tools")] components: Option<&ComponentRegistry>,
 ) -> Result<String> {
-    let client = ClientBuilder::new()
-        .api_key(api_key)
-        .build()
-        .map_err(|e| ErhLlmError::AnthropicError(e.to_string()))?;
+    let client = AnthropicClient::new(api_key);
 
-    let mut builder = ChatRequestBuilder::new().system(system.clone());
+    let system_block = if cache_system {
+        SystemBlock::cached(&system)
+    } else {
+        SystemBlock::new(&system)
+    };
 
-    // Skip turns with no plain-text response — these occurred when the model
-    // used tools and the tool result (not the final text) was what got stored.
-    // Replaying such turns would produce a `tool_use` without a following
-    // `tool_result`, which Anthropic rejects with a 400 error.
-    for msg in history {
-        if msg.bot_response.trim().is_empty() {
-            debug!("Skipping history turn with empty bot_response for user: {}", msg.user_message);
-            continue;
-        }
-        builder = builder
-            .message(Role::User, ContentBlock::text(msg.user_message))
-            .message(Role::Assistant, ContentBlock::text(msg.bot_response));
-    }
+    let mut messages = build_history_messages(history);
+    messages.push(ApiMessage::user_text(&user_query));
 
-    builder = builder.user_message(ContentBlock::text(user_query.clone()));
+    let mut request = ChatRequest {
+        model: model.model.clone(),
+        max_tokens: DEFAULT_MAX_TOKENS,
+        messages: messages.clone(),
+        system: Some(vec![system_block]),
+        tools: None,
+        thinking: thinking_budget.map(ThinkingConfig::enabled),
+        temperature: model.temperature,
+        stream: None,
+    };
 
-    if let Some(temp) = model.temperature {
-        builder = builder.temperature(temp);
-    }
-
-    // Add tools if available and enabled
     #[cfg(feature = "tools")]
     if model.tool.unwrap_or(false) {
         if let Some(comp) = components {
-            let tools = convert_tools_to_anthropic(comp);
-            if !tools.is_empty() {
-                debug!("Adding {} tools to Anthropic request (with system)", tools.len());
-                builder = builder.tools(tools);
+            let defs = registry_to_tool_defs(comp);
+            if !defs.is_empty() {
+                request.tools = Some(defs);
             }
         }
     }
 
-    let request = builder.build();
-    let initial_messages = request.messages.clone();
-    debug!("Sending prompt to Anthropic (with system): {user_query}");
+    debug!("Sending to Anthropic (model={}, system={}...): {user_query}", model.model, &system[..system.len().min(40)]);
+    let response = client.send(&request).await.map_err(ErhLlmError::from)?;
 
-    let anthropic_model = model_from_str(&model.model);
-    let mut response = client
-        .execute_chat_with_model(anthropic_model.clone(), request)
-        .await
-        .map_err(|e| ErhLlmError::AnthropicError(e.to_string()))?;
-
-    // Handle tool use loop
     #[cfg(feature = "tools")]
-    if model.tool.unwrap_or(false) {
+    let response = if model.tool.unwrap_or(false) {
         if let Some(comp) = components {
-            let mut extra_messages: Vec<(Role, Vec<ContentBlock>)> = vec![];
-            let max_iterations = 10;
-            let mut iteration = 0;
+            run_tool_loop(&client, &request, messages, response, comp).await?
+        } else { response }
+    } else { response };
 
-            while iteration < max_iterations {
-                let tool_uses: Vec<_> = response
-                    .content
-                    .iter()
-                    .filter_map(|block| {
-                        if let ContentBlock::ToolUse { id, name, input } = block {
-                            Some((id.clone(), name.clone(), input.clone()))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                if tool_uses.is_empty() {
-                    break;
-                }
-
-                debug!("Anthropic requested {} tool calls", tool_uses.len());
-
-                extra_messages.push((Role::Assistant, response.content.clone()));
-
-                let mut tool_results = vec![];
-                for (tool_id, tool_name, input) in tool_uses {
-                    debug!("Executing tool: {} with id: {}", tool_name, tool_id);
-                    match execute_tool(comp, &tool_name, &input).await {
-                        Ok(result) => {
-                            tool_results.push(ContentBlock::tool_result(tool_id, result));
-                        }
-                        Err(e) => {
-                            let error_msg = format!("Error executing tool '{}': {}", tool_name, e);
-                            debug!("{}", error_msg);
-                            tool_results.push(ContentBlock::tool_result(tool_id, error_msg));
-                        }
-                    }
-                }
-                extra_messages.push((Role::User, tool_results));
-
-                // Reconstruct full conversation: system + initial messages +
-                // all tool_use/tool_result pairs accumulated so far.
-                let mut new_builder = ChatRequestBuilder::new().system(system.clone());
-                new_builder = new_builder.messages(initial_messages.clone());
-                for (role, content) in &extra_messages {
-                    new_builder = new_builder.message_with_content(role.clone(), content.clone());
-                }
-
-                if let Some(temp) = model.temperature {
-                    new_builder = new_builder.temperature(temp);
-                }
-                let tools = convert_tools_to_anthropic(comp);
-                if !tools.is_empty() {
-                    new_builder = new_builder.tools(tools);
-                }
-
-                let new_request = new_builder.build();
-                response = client
-                    .execute_chat_with_model(anthropic_model.clone(), new_request)
-                    .await
-                    .map_err(|e| ErhLlmError::AnthropicError(e.to_string()))?;
-
-                iteration += 1;
-            }
-
-            if iteration >= max_iterations {
-                debug!("Warning: Tool use loop reached max iterations");
-            }
-        }
-    }
-
-    // Extract final text response
-    let text = response
-        .content
-        .into_iter()
-        .filter_map(|block| {
-            if let ContentBlock::Text { text, .. } = block {
-                Some(text)
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("");
-
-    debug!("Received response from Anthropic: {text}");
+    let text = response.text();
+    debug!("Anthropic response: {text}");
     Ok(text)
 }
 
-// ── LlmProvider implementation ──────────────────────────────────────────────
+// ── LlmProvider implementation ───────────────────────────────────────────────
 
-/// Anthropic provider implementation.
-///
-/// This struct implements the [`LlmProvider`] trait for Anthropic backends.
+/// Options specific to the Anthropic provider.
+#[derive(Debug, Clone, Default)]
+pub struct AnthropicOptions {
+    /// Enable extended thinking. `Some(N)` sets the token budget.
+    /// Requires claude-3-7-sonnet-20250219 or newer.
+    pub thinking_budget: Option<u32>,
+    /// Cache the system prompt using prompt caching.
+    pub cache_system: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct AnthropicProvider {
     api_key: String,
 }
 
 impl AnthropicProvider {
-    /// Creates a new Anthropic provider with the given configuration.
-    pub fn new(config: AnthropicConfig) -> Self {
-        Self {
-            api_key: config.api_key,
-        }
-    }
+    pub fn new(config: AnthropicConfig) -> Self { Self { api_key: config.api_key } }
+    pub fn with_api_key(api_key: impl Into<String>) -> Self { Self { api_key: api_key.into() } }
 
-    /// Creates a new Anthropic provider with the given API key.
-    pub fn with_api_key(api_key: String) -> Self {
-        Self { api_key }
-    }
-}
-
-/// Options for Anthropic requests.
-///
-/// Currently a placeholder - Anthropic doesn't have as many options as Ollama.
-#[derive(Debug, Clone, Default)]
-pub struct AnthropicOptions {
-    // Reserved for future use
+    /// Expose the underlying client for advanced use (streaming, token counting, etc.).
+    pub fn client(&self) -> AnthropicClient { AnthropicClient::new(&self.api_key) }
 }
 
 #[async_trait::async_trait]
@@ -466,9 +716,8 @@ impl LlmProvider for AnthropicProvider {
     type Options = AnthropicOptions;
 
     async fn embed(&self, _model: &ModelConfig, _chunk: String) -> Result<Vec<f32>> {
-        // Anthropic doesn't provide a native embeddings API
         Err(ErhLlmError::AnthropicError(
-            "Embeddings not supported by Anthropic provider".to_string(),
+            "Anthropic does not provide an embeddings API".to_string(),
         ))
     }
 
@@ -476,7 +725,7 @@ impl LlmProvider for AnthropicProvider {
         &self,
         model: &ModelConfig,
         history: Vec<ErhChatMessage>,
-        _options: Self::Options,
+        options: Self::Options,
         user_text: String,
         #[cfg(feature = "tools")] components: Option<&ComponentRegistry>,
     ) -> Result<String> {
@@ -485,6 +734,7 @@ impl LlmProvider for AnthropicProvider {
             model,
             history,
             user_text,
+            options.thinking_budget,
             #[cfg(feature = "tools")]
             components,
         )
@@ -495,7 +745,7 @@ impl LlmProvider for AnthropicProvider {
         &self,
         model: &ModelConfig,
         history: Vec<ErhChatMessage>,
-        _options: Self::Options,
+        options: Self::Options,
         system: String,
         user_query: String,
         #[cfg(feature = "tools")] components: Option<&ComponentRegistry>,
@@ -506,6 +756,8 @@ impl LlmProvider for AnthropicProvider {
             history,
             system,
             user_query,
+            options.thinking_budget,
+            options.cache_system,
             #[cfg(feature = "tools")]
             components,
         )

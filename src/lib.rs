@@ -9,7 +9,8 @@ mod composer;
 pub mod provider;
 mod ollama;
 mod mistral;
-mod anthropic;
+#[cfg(feature = "anthropic")]
+pub mod anthropic;
 pub mod errors;
 #[cfg(feature="tools")]
 mod components;
@@ -18,6 +19,7 @@ pub use composer::{ComposedPrompt, PromptComposer};
 pub use errors::{ErhLlmError, Result};
 pub use provider::{LlmProvider, OllamaConfig, AnthropicConfig, MistralConfig};
 pub use ollama::{OllamaProvider, ModelOptions};
+#[cfg(feature="anthropic")]
 pub use anthropic::{AnthropicProvider, AnthropicOptions};
 pub use mistral::{MistralProvider, MistralOptions};
 pub use history::HistoryConfig;
@@ -438,10 +440,13 @@ impl Query {
                     #[cfg(feature = "tools")] self.components.as_ref(),
                 ).await?
             }
+            #[cfg(feature="anthropic")]
             LLM::Anthropic(api_key, model) => {
                 let history = self.read_history()?;
                 anthropic::anthropic_chat_with_system(
                     api_key, model, history, system, user_query,
+                    None,  // thinking_budget
+                    false, // cache_system
                     #[cfg(feature = "tools")] self.components.as_ref(),
                 ).await?
             }
@@ -481,11 +486,12 @@ impl Query {
                 // TODO: Add tool support for MistralAI
                 mistral::mistral_chat(apikey, text)?
             }
-
+            #[cfg(feature="anthropic")]
             LLM::Anthropic(api_key, model) => {
                 let history = self.read_history()?;
                 anthropic::anthropic_chat(
                     api_key, model, history, text,
+                    None, // thinking_budget
                     #[cfg(feature = "tools")] self.components.as_ref(),
                 ).await?
             }
