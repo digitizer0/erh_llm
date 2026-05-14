@@ -9,6 +9,7 @@ mod composer;
 pub mod provider;
 mod ollama;
 mod mistral;
+//mod mistral_client;
 #[cfg(feature = "anthropic")]
 pub mod anthropic;
 pub mod errors;
@@ -483,8 +484,18 @@ impl Query {
                 ).await?
             }
             LLM::MistralAI(apikey) => {
-                // TODO: Add tool support for MistralAI
-                mistral::mistral_chat(apikey, text)?
+                let history = self.read_history()?;
+                let client = mistral::MistralClient::new(apikey);
+                let mut messages: Vec<mistral::Message> = history.iter().flat_map(|m| {
+                    [mistral::Message::user(&m.user_message), mistral::Message::assistant(&m.bot_response)]
+                }).collect();
+                messages.push(mistral::Message::user(&text));
+                let req = mistral::ChatRequest::new("mistral-medium-latest", messages);
+                let resp = client.chat(req).await
+                    .map_err(|e| ErhLlmError::MistralError(e.to_string()))?;
+                resp.first_content()
+                    .map(str::to_owned)
+                    .ok_or_else(|| ErhLlmError::MistralError("Empty response from Mistral".into()))?
             }
             #[cfg(feature="anthropic")]
             LLM::Anthropic(api_key, model) => {
