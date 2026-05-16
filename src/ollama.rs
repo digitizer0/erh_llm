@@ -49,6 +49,9 @@ struct ChatRequest {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     options: Option<ModelOptions>,
+    /// Set to false to suppress chain-of-thought / thinking output (qwen3, deepseek-r1, etc.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    think: Option<bool>,
     #[cfg(feature = "tools")]
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<ToolDef>>,
@@ -244,6 +247,7 @@ pub async fn ollama_stream_chat_with_system(
         messages,
         stream: true,
         options: Some(options),
+        think: Some(false),
         #[cfg(feature = "tools")]
         tools: None,
     };
@@ -268,7 +272,18 @@ pub async fn ollama_stream_chat_with_system(
     let reader = StreamReader::new(byte_stream);
     let mut lines = tokio::io::BufReader::new(reader).lines();
 
-    let mut full = String::new();
+    // Accumulate the raw response. Tags arrive token-by-token so we buffer
+    // in `pending` and scan for complete <think> / </think> markers.
+    // All content is forwarded via on_chunk; think content is prefixed with
+    // the sentinel "\x00THINK\x00" so callers can distinguish it from the
+    // real response without a second channel.
+    let mut raw = String::new();
+    let mut pending = String::new();
+    let mut in_think = false;
+    const OPEN: &str = "<think>";
+    const CLOSE: &str = "</think>";
+    const THINK_PREFIX: &str = "__THINK__:";  // ASCII-safe sentinel, stripped by api.js
+
     while let Some(line) = lines.next_line().await.map_err(|e| ErhLlmError::OllamaError(e.to_string()))? {
         let line = line.trim().to_string();
         if line.is_empty() { continue; }
@@ -276,16 +291,66 @@ pub async fn ollama_stream_chat_with_system(
             Ok(chunk) => {
                 let delta = chunk.message.content;
                 if !delta.is_empty() {
-                    full.push_str(&delta);
-                    on_chunk(delta);
+                    raw.push_str(&delta);
+                    pending.push_str(&delta);
+
+                    loop {
+                        if in_think {
+                            if let Some(pos) = pending.find(CLOSE) {
+                                // Emit think content before the closing tag
+                                let think_content = pending[..pos].to_string();
+                                pending = pending[pos + CLOSE.len()..].to_string();
+                                in_think = false;
+                                if !think_content.is_empty() {
+                                    on_chunk(format!("{THINK_PREFIX}{}", think_content.replace('\n', "\\n")));
+                                }
+                                // continue loop — may be visible content after </think>
+                            } else {
+                                // Still accumulating think — emit all now, no tail needed
+                                // since </think> arrives as its own discrete chunk(s)
+                                if !pending.is_empty() {
+                                    on_chunk(format!("{THINK_PREFIX}{}", pending.replace('\n', "\\n")));
+                                    pending.clear();
+                                }
+                                break;
+                            }
+                        } else if let Some(pos) = pending.find(OPEN) {
+                            // Emit visible content before the opening tag
+                            let safe = pending[..pos].to_string();
+                            pending = pending[pos + OPEN.len()..].to_string();
+                            in_think = true;
+                            if !safe.is_empty() {
+                                on_chunk(safe);
+                            }
+                            // continue loop — handle think content
+                        } else {
+                            // No think tag — emit everything immediately.
+                            // Do NOT hold back a tail: <think> tokens arrive as
+                            // discrete chunks so the tag assembles across iterations.
+                            if !pending.is_empty() {
+                                on_chunk(pending.clone());
+                                pending.clear();
+                            }
+                            break;
+                        }
+                    }
                 }
-                if chunk.done { break; }
+                if chunk.done {
+                    if !pending.is_empty() {
+                        if in_think {
+                            on_chunk(format!("{THINK_PREFIX}{}", pending.replace('\n', "\\n")));
+                        } else {
+                            on_chunk(pending.clone());
+                        }
+                    }
+                    break;
+                }
             }
             Err(e) => debug!("Ollama stream: skipping unparseable line ({e}): {line}"),
         }
     }
 
-    Ok(full)
+    Ok(strip_think_tags(&raw))
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -294,17 +359,29 @@ fn build_options(base: ModelOptions, model: &ModelConfig) -> ModelOptions {
     let num_ctx = base.num_ctx.or_else(|| model.context_size.map(|c| c as u64));
     ModelOptions {
         num_ctx,
-        num_predict: base.num_predict.or(Some(-1)),
+        // Cap at 2048 tokens max output; -1 means unlimited which causes runaway loops.
+        num_predict: base.num_predict.or(Some(2048)),
         temperature: base.temperature.or(model.temperature),
         ..base
     }
 }
 
+/// Keep only the most recent N conversation turns to bound context size.
+const MAX_HISTORY_TURNS: usize = 5;
+
 fn build_messages(history: Vec<ErhChatMessage>) -> Vec<Message> {
+    // Take only the most recent turns to avoid unbounded context growth.
+    let history = if history.len() > MAX_HISTORY_TURNS {
+        history.into_iter().rev().take(MAX_HISTORY_TURNS).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>()
+    } else {
+        history
+    };
     let mut out = Vec::with_capacity(history.len() * 2);
     for msg in history {
         out.push(Message { role: "user".to_string(), content: msg.user_message, tool_calls: None });
-        out.push(Message { role: "assistant".to_string(), content: msg.bot_response, tool_calls: None });
+        // Strip think-block content from stored responses before feeding them
+        // back as context — guards against rows stored before the filter existed.
+        out.push(Message { role: "assistant".to_string(), content: strip_think_tags(&msg.bot_response), tool_calls: None });
     }
     out
 }
@@ -331,6 +408,27 @@ fn build_tool_defs(components: &ComponentRegistry) -> Vec<ToolDef> {
         .collect()
 }
 
+/// Remove `<think>…</think>` blocks (chain-of-thought) from a model response.
+/// Used for reasoning models like qwen3 and deepseek-r1 that emit scratchpads.
+fn strip_think_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    loop {
+        match rest.find("<think>") {
+            None => { out.push_str(rest); break; }
+            Some(start) => {
+                out.push_str(&rest[..start]);
+                rest = &rest[start + "<think>".len()..];
+                match rest.find("</think>") {
+                    None => break, // unclosed tag — drop remainder
+                    Some(end) => rest = &rest[end + "</think>".len()..],
+                }
+            }
+        }
+    }
+    out.trim().to_string()
+}
+
 async fn run_chat_loop(
     host: &str,
     port: u16,
@@ -349,6 +447,7 @@ async fn run_chat_loop(
             messages: messages.clone(),
             stream: false,
             options: Some(options.clone()),
+            think: Some(false),
             #[cfg(feature = "tools")]
             tools: if model.tool.unwrap_or(false) { tools.clone() } else { None },
         };
@@ -394,8 +493,9 @@ async fn run_chat_loop(
                     continue;
                 }
 
-        debug!("Received response: {}", assistant_msg.content);
-        return Ok(assistant_msg.content);
+        let content = strip_think_tags(&assistant_msg.content);
+        debug!("Received response: {}", content);
+        return Ok(content);
     }
 }
 

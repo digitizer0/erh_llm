@@ -6,6 +6,26 @@ use crate::errors::ErhLlmError;
 use crate::ChatMessage;
 use crate::history::HistoryTrait;
 
+/// Remove `<think>…</think>` blocks from a stored response.
+fn strip_think(s: String) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s.as_str();
+    loop {
+        match rest.find("<think>") {
+            None => { out.push_str(rest); break; }
+            Some(start) => {
+                out.push_str(&rest[..start]);
+                rest = &rest[start + "<think>".len()..];
+                match rest.find("</think>") {
+                    None => break,
+                    Some(end) => rest = &rest[end + "</think>".len()..],
+                }
+            }
+        }
+    }
+    out.trim().to_string()
+}
+
 #[derive(Debug)]
 pub struct MysqlHistory {
     pool: Pool,
@@ -87,12 +107,20 @@ impl HistoryTrait for MysqlHistory {
     /// query fails.
     fn read(&self, chatuuid: &str) -> Result<Vec<crate::ChatMessage>, ErhLlmError> {
         let mut conn = self.get_connection()?;
+        // ORDER BY ensures chronological context; LIMIT caps token usage.
         let result: Vec<(String, String, String, String)> = conn.exec(
-            "SELECT username, user_message, bot_response, chatuuid FROM chat_history WHERE chatuuid = ?",
+            "SELECT username, user_message, bot_response, chatuuid \
+             FROM chat_history WHERE chatuuid = ? \
+             ORDER BY timestamp ASC LIMIT 40",
             (chatuuid,),
         )?;
         let result: Vec<ChatMessage> = result.into_iter()
-            .map(ChatMessage::from_tuple)
+            .map(|mut row| {
+                // Strip think-block content that may have been stored before
+                // the streaming filter was in place.
+                row.2 = strip_think(row.2);
+                ChatMessage::from_tuple(row)
+            })
             .collect();
         Ok(result)
     }
