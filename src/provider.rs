@@ -83,6 +83,33 @@ pub trait LlmProvider: Send + Sync {
         user_query: String,
         #[cfg(feature = "tools")] components: Option<&ComponentRegistry>,
     ) -> Result<String>;
+
+    /// Streaming variant of [`chat_with_system`].
+    #[allow(clippy::too_many_arguments)]
+    ///
+    /// Calls `on_chunk` for every text delta as it arrives from the provider.
+    /// Returns the complete response text when the stream ends.
+    ///
+    /// The default implementation falls back to [`chat_with_system`] and calls
+    /// `on_chunk` once with the full response, so providers that have not yet
+    /// implemented native streaming still work correctly.
+    async fn stream_chat_with_system(
+        &self,
+        model: &ModelConfig,
+        history: Vec<ErhChatMessage>,
+        options: Self::Options,
+        system: String,
+        user_query: String,
+        on_chunk: &mut (dyn FnMut(String) + Send),
+        #[cfg(feature = "tools")] components: Option<&ComponentRegistry>,
+    ) -> Result<String> {
+        let response = self.chat_with_system(
+            model, history, options, system, user_query,
+            #[cfg(feature = "tools")] components,
+        ).await?;
+        on_chunk(response.clone());
+        Ok(response)
+    }
 }
 
 /// Configuration for creating an Ollama provider instance.

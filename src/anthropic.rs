@@ -763,4 +763,39 @@ impl LlmProvider for AnthropicProvider {
         )
         .await
     }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn stream_chat_with_system(
+        &self,
+        model: &ModelConfig,
+        history: Vec<ErhChatMessage>,
+        _options: Self::Options,
+        system: String,
+        user_query: String,
+        on_chunk: &mut (dyn FnMut(String) + Send),
+        #[cfg(feature = "tools")] _components: Option<&ComponentRegistry>,
+    ) -> Result<String> {
+        let client = self.client();
+
+        let mut messages = build_history_messages(history);
+        messages.push(ApiMessage::user_text(&user_query));
+
+        let request = ChatRequest {
+            model: model.model.clone(),
+            max_tokens: DEFAULT_MAX_TOKENS,
+            messages,
+            system: Some(vec![SystemBlock::new(&system)]),
+            tools: None,
+            thinking: None,
+            temperature: model.temperature,
+            stream: Some(true),
+        };
+
+        let result = client
+            .stream_chat(&request, on_chunk)
+            .await
+            .map_err(ErhLlmError::from)?;
+
+        Ok(result.text)
+    }
 }

@@ -67,6 +67,14 @@ struct ChatResponse {
     message: Message,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct StreamChunk {
+    message: Message,
+    #[serde(default)]
+    done: bool,
+}
+
 #[cfg(feature = "tools")]
 #[derive(Serialize, Clone)]
 struct ToolDef {
@@ -204,6 +212,80 @@ pub async fn ollama_chat_with_system(
         #[cfg(feature = "tools")] tools,
         #[cfg(feature = "tools")] components,
     ).await
+}
+
+/// Streaming variant: sends `system` + `user_query` to Ollama with `stream: true`
+/// and calls `on_chunk` for every text delta received via NDJSON lines.
+/// Returns the full concatenated response.
+#[allow(clippy::too_many_arguments)]
+pub async fn ollama_stream_chat_with_system(
+    host: &str,
+    port: u16,
+    model: &ModelConfig,
+    history: Vec<ErhChatMessage>,
+    base_options: ModelOptions,
+    system: String,
+    user_query: String,
+    on_chunk: &mut (dyn FnMut(String) + Send),
+    #[cfg(feature = "tools")] _components: Option<&ComponentRegistry>,
+) -> Result<String> {
+    use tokio::io::AsyncBufReadExt;
+    use tokio_util::io::StreamReader;
+    use futures::TryStreamExt;
+
+    let url = format!("{host}:{port}/api/chat");
+    let options = build_options(base_options, model);
+    let mut messages = build_messages(history);
+    messages.push(Message { role: "system".to_string(), content: system, tool_calls: None });
+    messages.push(Message { role: "user".to_string(), content: user_query, tool_calls: None });
+
+    let req = ChatRequest {
+        model: model.model.clone(),
+        messages,
+        stream: true,
+        options: Some(options),
+        #[cfg(feature = "tools")]
+        tools: None,
+    };
+
+    let client = Client::new();
+    let resp = client
+        .post(&url)
+        .json(&req)
+        .send()
+        .await
+        .map_err(|e| ErhLlmError::OllamaError(e.to_string()))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(ErhLlmError::OllamaError(format!("Ollama stream HTTP {status}: {text}")));
+    }
+
+    let byte_stream = resp
+        .bytes_stream()
+        .map_err(std::io::Error::other);
+    let reader = StreamReader::new(byte_stream);
+    let mut lines = tokio::io::BufReader::new(reader).lines();
+
+    let mut full = String::new();
+    while let Some(line) = lines.next_line().await.map_err(|e| ErhLlmError::OllamaError(e.to_string()))? {
+        let line = line.trim().to_string();
+        if line.is_empty() { continue; }
+        match serde_json::from_str::<StreamChunk>(&line) {
+            Ok(chunk) => {
+                let delta = chunk.message.content;
+                if !delta.is_empty() {
+                    full.push_str(&delta);
+                    on_chunk(delta);
+                }
+                if chunk.done { break; }
+            }
+            Err(e) => debug!("Ollama stream: skipping unparseable line ({e}): {line}"),
+        }
+    }
+
+    Ok(full)
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -373,6 +455,23 @@ impl LlmProvider for OllamaProvider {
     ) -> Result<String> {
         ollama_chat_with_system(
             &self.host, self.port, model, history, options, system, user_query,
+            #[cfg(feature = "tools")] components,
+        ).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn stream_chat_with_system(
+        &self,
+        model: &ModelConfig,
+        history: Vec<ErhChatMessage>,
+        options: Self::Options,
+        system: String,
+        user_query: String,
+        on_chunk: &mut (dyn FnMut(String) + Send),
+        #[cfg(feature = "tools")] components: Option<&ComponentRegistry>,
+    ) -> Result<String> {
+        ollama_stream_chat_with_system(
+            &self.host, self.port, model, history, options, system, user_query, on_chunk,
             #[cfg(feature = "tools")] components,
         ).await
     }

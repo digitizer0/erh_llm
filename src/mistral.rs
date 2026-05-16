@@ -502,4 +502,56 @@ impl LlmProvider for MistralProvider {
             .map(str::to_owned)
             .ok_or_else(|| ErhLlmError::MistralError("Empty response from Mistral".into()))
     }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn stream_chat_with_system(
+        &self,
+        model: &ModelConfig,
+        history: Vec<ErhChatMessage>,
+        options: Self::Options,
+        system: String,
+        user_query: String,
+        on_chunk: &mut (dyn FnMut(String) + Send),
+        #[cfg(feature = "tools")] _components: Option<&ComponentRegistry>,
+    ) -> Result<String> {
+        use futures::StreamExt;
+
+        let mut messages = vec![Message::system(&system)];
+        for m in &history {
+            messages.push(Message::user(&m.user_message));
+            messages.push(Message::assistant(&m.bot_response));
+        }
+        messages.push(Message::user(&user_query));
+
+        let mut req = ChatRequest::new(self.model_id(model), messages);
+        if let Some(t) = options.temperature { req = req.temperature(t); }
+        if let Some(n) = options.max_tokens  { req = req.max_tokens(n); }
+        if options.safe_prompt               { req = req.safe_prompt(); }
+
+        debug!("Mistral stream_chat_with_system → model={}", req.model);
+        let mut stream = self.client().chat_stream(req).await
+            .map_err(|e| ErhLlmError::MistralError(e.to_string()))?;
+
+        let mut full = String::new();
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(chunk) => {
+                    for choice in chunk.choices {
+                        if let Some(delta) = choice.delta.content
+                            && !delta.is_empty()
+                        {
+                            full.push_str(&delta);
+                            on_chunk(delta);
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("Mistral stream chunk error: {e}");
+                    break;
+                }
+            }
+        }
+
+        Ok(full)
+    }
 }

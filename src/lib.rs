@@ -494,6 +494,78 @@ impl Query {
         Ok(resp)
     }
 
+    /// Provider-agnostic streaming chat.
+    ///
+    /// Mirrors [`Query::execute`] but calls the backend's native streaming path
+    /// instead of waiting for the full response.  `on_chunk` is invoked for every
+    /// text delta as it arrives.  Returns the complete response text when the
+    /// stream ends.
+    ///
+    /// Backends that do not yet implement native streaming fall back to a single
+    /// `on_chunk` call with the full non-streamed response, so the caller's logic
+    /// stays the same regardless of provider.
+    pub async fn stream_execute(
+        &mut self,
+        on_chunk: &mut (dyn FnMut(String) + Send),
+    ) -> Result<String> {
+        let qsetup = self.setup.clone();
+        let composed = PromptComposer::new()
+            .context(self.context.clone())
+            .constraint(qsetup.constraint.as_deref().unwrap_or(""))
+            .style(qsetup.style.as_deref().unwrap_or(""))
+            .build(&qsetup.prompt);
+
+        let history = self.read_history()?;
+
+        let resp = match &self.connection {
+            LLM::Ollama(host, port, model) => {
+                ollama::ollama_stream_chat_with_system(
+                    host, *port, model, history,
+                    self.options.clone(),
+                    composed.system, composed.user,
+                    on_chunk,
+                    #[cfg(feature = "tools")] self.components.as_ref(),
+                ).await?
+            }
+            #[cfg(feature = "anthropic")]
+            LLM::Anthropic(api_key, model) => {
+                let provider = anthropic::AnthropicProvider::with_api_key(api_key.clone());
+                use crate::provider::LlmProvider;
+                provider.stream_chat_with_system(
+                    model, history,
+                    anthropic::AnthropicOptions::default(),
+                    composed.system, composed.user,
+                    on_chunk,
+                    #[cfg(feature = "tools")] self.components.as_ref(),
+                ).await?
+            }
+            _ => {
+                // Fallback: non-streaming execute, emit as a single chunk
+                let full = self.send_raw_with_system(composed.system, composed.user).await?;
+                on_chunk(full.clone());
+                full
+            }
+        };
+
+        // Persist the exchange in history
+        let mut msg = ChatMessage {
+            id: None,
+            user: self.setup.user.clone(),
+            user_message: self.setup.prompt.clone(),
+            bot_response: resp.clone(),
+            timestamp: 0,
+            chatuuid: self.setup.chatuuid.clone(),
+        };
+        if let Some(history_store) = &mut self.history
+            && let Err(e) = history_store.store(&mut msg)
+        {
+            warn!("Error storing streamed message in history: {e}");
+        }
+        self.last_message_id = msg.id;
+
+        Ok(resp)
+    }
+
     /// Classifies [`QuerySetup::prompt`] against the criteria stored in
     /// `self.classification`.
     ///
