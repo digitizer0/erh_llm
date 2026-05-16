@@ -40,10 +40,11 @@ impl MysqlHistory {
             r#"CREATE TABLE IF NOT EXISTS chat_history (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
                 username VARCHAR(60),
-                chatuuid VARCHAR(40) NOT NULL,
+                chatuuid VARCHAR(64) NOT NULL,
                 user_message TEXT NOT NULL,
                 bot_response TEXT NOT NULL,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                feedback CHAR(1) DEFAULT NULL,
+                timestamp DATETIME(6) DEFAULT CURRENT_TIMESTAMP(6)
             )"#
         )?;
         debug!("Database initialized successfully.");
