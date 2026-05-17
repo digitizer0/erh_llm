@@ -33,6 +33,14 @@ pub struct QwenConfig {
     /// Maximum number of new tokens to generate per call.
     pub max_new_tokens: u32,
 
+    /// Number of model layers to offload to the GPU.
+    ///
+    /// Set to `i32::MAX` to offload all layers (maximum GPU utilization).
+    /// Set to `0` to run entirely on CPU.
+    /// Defaults to `i32::MAX` so CUDA acceleration is used automatically
+    /// when a compatible GPU is present.
+    pub n_gpu_layers: i32,
+
     /// Reasoning mode applied to all chat calls from this model.
     #[cfg(feature = "reasoning")]
     pub reasoning: ReasoningMode,
@@ -47,6 +55,7 @@ impl Default for QwenConfig {
             temperature: 0.7,
             top_p: 0.9,
             max_new_tokens: 2048,
+            n_gpu_layers: i32::MAX,
             #[cfg(feature = "reasoning")]
             reasoning: ReasoningMode::default(),
         }
@@ -66,6 +75,15 @@ impl QwenConfig {
     #[cfg(feature = "reasoning")]
     pub fn with_reasoning(mut self, mode: ReasoningMode) -> Self {
         self.reasoning = mode;
+        self
+    }
+
+    /// Set the number of model layers to offload to the GPU.
+    ///
+    /// Pass `i32::MAX` (the default) to offload all layers and maximize GPU
+    /// utilization. Pass `0` to run entirely on CPU.
+    pub fn with_n_gpu_layers(mut self, n: i32) -> Self {
+        self.n_gpu_layers = n;
         self
     }
 }
@@ -99,7 +117,7 @@ impl QwenModel {
             };
 
             let _backend = LlamaBackend::init()?;
-            let params = LlamaModelParams::default().with_n_gpu_layers(0);
+            let params = LlamaModelParams::default().with_n_gpu_layers(config.n_gpu_layers);
             let inner = LlamaModel::load_from_file(&config.model_path, params)?;
             return Ok(QwenModel { config, inner });
         }
@@ -293,12 +311,22 @@ mod tests {
         assert_eq!(cfg.context_size, 4096);
         assert_eq!(cfg.n_threads, 4);
         assert_eq!(cfg.max_new_tokens, 2048);
+        assert_eq!(cfg.n_gpu_layers, i32::MAX);
     }
 
     #[test]
     fn test_qwen_config_new() {
         let cfg = QwenConfig::new("/models/qwen3.5.gguf");
         assert_eq!(cfg.model_path, PathBuf::from("/models/qwen3.5.gguf"));
+    }
+
+    #[test]
+    fn test_qwen_config_with_n_gpu_layers() {
+        let cfg = QwenConfig::new("/models/qwen3.5.gguf").with_n_gpu_layers(0);
+        assert_eq!(cfg.n_gpu_layers, 0);
+
+        let cfg_all = QwenConfig::new("/models/qwen3.5.gguf").with_n_gpu_layers(i32::MAX);
+        assert_eq!(cfg_all.n_gpu_layers, i32::MAX);
     }
 
     #[cfg(feature = "reasoning")]
