@@ -18,10 +18,13 @@ This library works natively with llama.cpp (no Ollama required), making it a lig
 | `reasoning` | ✅       | Enable Qwen3 thinking-token support (`<think>…</think>`) |
 | `native`    | ❌       | Link against the native llama.cpp library |
 | `cuda`      | ❌       | Enable NVIDIA CUDA GPU acceleration (implies `native`) |
+| `intel-arc` | ❌       | Enable Intel Arc GPU acceleration via Vulkan (implies `native`) |
 
 The `native` feature requires llama.cpp to be installed on your system (see [Prerequisites](#prerequisites)).
 
 The `cuda` feature additionally requires the CUDA toolkit and a CUDA-enabled build of llama.cpp.
+
+The `intel-arc` feature additionally requires the Vulkan SDK and a Vulkan-enabled build of llama.cpp.
 
 ---
 
@@ -35,10 +38,15 @@ To use the `native` feature you need:
    ```
 2. llama.cpp installed and its shared library (`libllama`) visible on your `LD_LIBRARY_PATH`/`LIBRARY_PATH`.
 
-To use the `cuda` feature you additionally need:
+The `cuda` feature additionally requires:
 
-3. The [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) installed (nvcc and the CUDA runtime libraries).
-4. A CUDA-enabled build of llama.cpp (compile with `cmake -DGGML_CUDA=ON …`).
+1. The [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) installed (nvcc and the CUDA runtime libraries).
+2. A CUDA-enabled build of llama.cpp (compile with `cmake -DGGML_CUDA=ON …`).
+
+The `intel-arc` feature additionally requires:
+
+1. The [Vulkan SDK](https://vulkan.lunarg.com/) installed.
+2. A Vulkan-enabled build of llama.cpp (compile with `cmake -DGGML_VULKAN=ON …`).
 
 ---
 
@@ -48,9 +56,10 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-qwen-rs = { path = "qwen-rs" }                           # without native inference
-# qwen-rs = { path = "qwen-rs", features = ["native"] }  # with CPU-only native inference
-# qwen-rs = { path = "qwen-rs", features = ["cuda"] }    # with NVIDIA CUDA GPU acceleration
+qwen-rs = { path = "qwen-rs" }                              # without native inference
+# qwen-rs = { path = "qwen-rs", features = ["native"] }    # with CPU-only native inference
+# qwen-rs = { path = "qwen-rs", features = ["cuda"] }      # with NVIDIA CUDA GPU acceleration
+# qwen-rs = { path = "qwen-rs", features = ["intel-arc"] } # with Intel Arc GPU acceleration (Vulkan)
 ```
 
 ### Text-only chat

@@ -37,8 +37,8 @@ pub struct QwenConfig {
     ///
     /// Set to `i32::MAX` to offload all layers (maximum GPU utilization).
     /// Set to `0` to run entirely on CPU.
-    /// Defaults to `i32::MAX` so CUDA acceleration is used automatically
-    /// when a compatible GPU is present.
+    /// Defaults to `i32::MAX` so GPU acceleration (CUDA, Vulkan, etc.) is
+    /// used automatically when a compatible GPU and backend are present.
     pub n_gpu_layers: i32,
 
     /// Reasoning mode applied to all chat calls from this model.
