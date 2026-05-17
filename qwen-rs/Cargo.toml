@@ -1,0 +1,28 @@
+[package]
+name = "qwen-rs"
+version = "0.1.0"
+edition = "2021"
+description = "A Rust library for Qwen 3.5 LLM inference via llama.cpp, supporting tools and reasoning"
+license = "MIT"
+repository = "https://github.com/digitizer0/erh_llm"
+keywords = ["llm", "qwen", "llama-cpp", "ai", "nlp"]
+categories = ["science"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+log = "0.4"
+thiserror = "2.0"
+
+# Optional: native llama.cpp bindings (requires llama.cpp to be installed)
+llama-cpp-2 = { version = "0.1", optional = true }
+
+[features]
+# tools: enable tool/function calling support
+# reasoning: enable Qwen3 thinking/reasoning mode (/think)
+# native: compile with actual llama.cpp bindings (requires native library)
+default = ["tools", "reasoning"]
+tools = []
+reasoning = []
+native = ["llama-cpp-2"]
