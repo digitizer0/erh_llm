@@ -29,11 +29,35 @@ tokio = { version = "1.0", features = ["rt", "net", "rt-multi-thread"] }
 tiberius = { version = "0.12", optional = true }
 tokio-util = { version = "0.7", features = ["compat", "io"] }
 
+#Tools
+schemars = { version = "1.2", optional = true }
+
+# Native LLM support
+llama-cpp-2 = { version = "=0.1.138", optional = true }
+llama-cpp-sys-2 = { version = "=0.1.138", optional = true }
+
 [features]
-default = ["tools"]
+default = ["tools","cuda"]
 sqlite_hist = ["rusqlite", "uuid","r2d2", "r2d2_sqlite"]
 mysql_hist = ["mysql"]
 mssql_hist = ["tiberius"]
 tools = []
 anthropic = []
 
+reasoning = []
+native = ["reasoning","llama-cpp-2","llama-cpp-sys-2"]
+cuda = ["native", "llama-cpp-2/cuda", "llama-cpp-sys-2/cuda"]
+intel-arc = ["native", "llama-cpp-2/vulkan", "llama-cpp-sys-2/vulkan"]
+
+#[lints.clippy]
+# Deny dangerous patterns
+#unwrap_used = "deny"
+#expect_used = "deny"
+#panic = "deny"
+# Additional useful lints
+#pedantic = "warn"
+#nursery = "warn"
+# Allow some pedantic lints that might be too noisy
+#missing_errors_doc = "allow"
+#missing_panics_doc = "allow"
+#module_name_repetitions = "allow"

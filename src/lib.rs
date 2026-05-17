@@ -16,6 +16,9 @@ pub mod errors;
 #[cfg(feature="tools")]
 mod components;
 
+#[cfg(feature="native")]
+pub mod qwen;
+
 pub use composer::{ComposedPrompt, PromptComposer};
 pub use errors::{ErhLlmError, Result};
 pub use provider::{LlmProvider, OllamaConfig, AnthropicConfig, MistralConfig};

@@ -3,14 +3,14 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 #[cfg(feature = "tools")]
-use crate::tool::Tool;
-use crate::chat::ChatMessage;
+use super::tool::Tool;
+use super::chat::ChatMessage;
 #[cfg(feature = "native")]
-use crate::chat::ChatRole;
+use super::chat::ChatRole;
 #[cfg(feature = "reasoning")]
-use crate::reasoning::ReasoningMode;
+use super::reasoning::ReasoningMode;
 #[cfg(all(feature = "native", feature = "reasoning"))]
-use crate::reasoning::split_thinking;
+use super::reasoning::split_thinking;
 
 /// Configuration used when loading a Qwen model.
 #[derive(Debug, Clone)]
@@ -100,6 +100,10 @@ pub struct QwenModel {
     /// The underlying llama.cpp model handle (only present with the `native` feature).
     #[cfg(feature = "native")]
     inner: llama_cpp_2::model::LlamaModel,
+
+    /// The llama.cpp backend handle (only present with the `native` feature).
+    #[cfg(feature = "native")]
+    backend: llama_cpp_2::llama_backend::LlamaBackend,
 }
 
 impl QwenModel {
@@ -116,10 +120,10 @@ impl QwenModel {
                 model::{params::LlamaModelParams, LlamaModel},
             };
 
-            let _backend = LlamaBackend::init()?;
-            let params = LlamaModelParams::default().with_n_gpu_layers(config.n_gpu_layers);
-            let inner = LlamaModel::load_from_file(&config.model_path, params)?;
-            return Ok(QwenModel { config, inner });
+            let backend = LlamaBackend::init()?;
+            let params = LlamaModelParams::default().with_n_gpu_layers(config.n_gpu_layers.try_into().unwrap_or(u32::MAX));
+            let inner = LlamaModel::load_from_file(&backend, &config.model_path, &params)?;
+            return Ok(QwenModel { config, inner, backend });
         }
 
         #[cfg(not(feature = "native"))]
@@ -194,7 +198,8 @@ impl QwenModel {
     ) -> Result<String> {
         use llama_cpp_2::{
             context::params::LlamaContextParams,
-            llama_backend::LlamaBackend,
+            model::Special,
+            sampling::LlamaSampler,
             token::data_array::LlamaTokenDataArray,
         };
 
@@ -207,9 +212,9 @@ impl QwenModel {
 
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(std::num::NonZeroU32::new(self.config.context_size))
-            .with_n_threads(self.config.n_threads);
+            .with_n_threads(self.config.n_threads.try_into().unwrap_or(4));
 
-        let mut ctx = self.inner.new_context(&LlamaBackend::init()?, ctx_params)?;
+        let mut ctx = self.inner.new_context(&self.backend, ctx_params)?;
 
         let tokens = self.inner.str_to_token(&prompt, llama_cpp_2::model::AddBos::Always)?;
         let mut batch = llama_cpp_2::llama_batch::LlamaBatch::new(tokens.len() + self.config.max_new_tokens as usize, 1);
@@ -227,14 +232,20 @@ impl QwenModel {
             let candidates = ctx.candidates_ith(batch.n_tokens() - 1);
             let mut candidates_p = LlamaTokenDataArray::from_iter(candidates, false);
 
-            ctx.sample_temp(&mut candidates_p, self.config.temperature);
-            ctx.sample_top_p(&mut candidates_p, self.config.top_p, 1);
-            let token = ctx.sample_token_greedy(&mut candidates_p);
+            let mut sampler = LlamaSampler::chain_simple([
+                LlamaSampler::temp(self.config.temperature),
+                LlamaSampler::top_p(self.config.top_p, 1),
+                LlamaSampler::greedy(),
+            ]);
+            candidates_p.apply_sampler(&sampler);
+            let token = candidates_p.sample_token_greedy();
+            sampler.accept(token);
 
             if token == self.inner.token_eos() {
                 break;
             }
-            generated.push_str(&self.inner.token_to_str(token)?);
+            #[allow(deprecated)]
+            generated.push_str(&self.inner.token_to_str(token, Special::Tokenize)?);
 
             batch.clear();
             batch.add(token, n_cur, &[0], true)?;
@@ -267,7 +278,7 @@ impl QwenModel {
         // Serialize available tools as a JSON block in the system message.
         #[cfg(feature = "tools")]
         let tools_block = if !tools.is_empty() {
-            let tool_jsons: Vec<_> = tools.iter().map(|t| t.to_json()).collect();
+            let tool_jsons: Vec<_> = tools.iter().map(|t: &Tool| t.to_json()).collect();
             format!("\n\n# Tools\n\nYou may call one or more tools. Available tools:\n\n```json\n{}\n```",
                 serde_json::to_string_pretty(&tool_jsons)?)
         } else {
@@ -275,7 +286,12 @@ impl QwenModel {
         };
 
         for msg in messages {
-            let role_str = msg.role.to_string();
+            let role_str = match msg.role {
+                ChatRole::System => "system",
+                ChatRole::User => "user",
+                ChatRole::Assistant => "assistant",
+                ChatRole::Tool => "tool",
+            };
             let mut content = msg.content.clone();
 
             // Append reasoning hint and tool definitions to the first system message.

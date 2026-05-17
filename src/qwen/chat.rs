@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "tools")]
-use crate::tool::{ToolCall, ToolResult};
+use super::tool::{ToolCall, ToolResult};
 
 /// The role of a participant in a conversation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
